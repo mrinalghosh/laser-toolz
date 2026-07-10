@@ -216,3 +216,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- laser-toolz project-specific ---
+# Generated SVG / preview output
+out.svg
+preview.svg
+preview.png
+*_wavy.svg
+*_spacing.svg
+*_contour.svg
+
+# macOS
+.DS_Store
