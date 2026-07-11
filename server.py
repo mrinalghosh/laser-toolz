@@ -36,7 +36,7 @@ _NAMES: dict[str, str] = {}
 # None) and PEP 563 makes dataclass .type a string, so name the coercion here.
 _BOOL_FIELDS = {"invert", "freq_mod"}
 _INT_FIELDS = {"samples", "resample", "levels"}
-_STR_FIELDS = {"mode", "color", "units"}
+_STR_FIELDS = {"mode", "color", "units", "spacing_style"}
 _FLOAT_FIELDS = {f.name for f in fields(Params)} - _BOOL_FIELDS - _INT_FIELDS - _STR_FIELDS
 
 
@@ -234,6 +234,12 @@ _PAGE = r"""<!doctype html>
       <input type="range" id="line_spacing" min="0.5" max="8" step="0.05" value="2">
       <label class="row">Amplitude (mm) <input class="num" type="number" id="n_amp"></label>
       <input type="range" id="amp" min="0" max="4" step="0.02" value="1">
+      <label class="row">Amp gamma <input class="num" type="number" id="n_amp_gamma"></label>
+      <input type="range" id="amp_gamma" min="0.2" max="2" step="0.05" value="1">
+      <p class="hint">&lt;1 lifts midtones — more contrast in the darks</p>
+      <label class="row">Phase jitter <input class="num" type="number" id="n_phase_jitter"></label>
+      <input type="range" id="phase_jitter" min="0" max="1" step="0.02" value="0">
+      <p class="hint">decorrelates lines — breaks vertical banding</p>
       <label class="row">Wavelength (mm) <input class="num" type="number" id="n_wavelength"></label>
       <input type="range" id="wavelength" min="1" max="30" step="0.25" value="8">
       <div class="chk"><input type="checkbox" id="freq_mod"><label for="freq_mod">Frequency modulation</label></div>
@@ -243,6 +249,11 @@ _PAGE = r"""<!doctype html>
 
     <!-- spacing -->
     <div class="grp mode-spacing hide"><h3>Spacing</h3>
+      <label class="row">Style</label>
+      <select id="spacing_style">
+        <option value="clean">clean — crisp lines, silhouette</option>
+        <option value="density">density — internal shading (dottier)</option>
+      </select>
       <label class="row">Min spacing / dark (mm) <input class="num" type="number" id="n_min_spacing"></label>
       <input type="range" id="min_spacing" min="0.1" max="4" step="0.02" value="0.6">
       <label class="row">Max spacing / light (mm) <input class="num" type="number" id="n_max_spacing"></label>
@@ -296,8 +307,8 @@ const WIDTH_CFG = { mm:{min:20,max:1000,step:1}, cm:{min:2,max:100,step:0.1}, in
 
 // every control with a range + paired number input (id === Params field, except
 // "width", whose value is in the selected unit and converts to width_mm on send)
-const RANGES = ["width","mask_threshold","line_spacing","amp","wavelength","freq_amount",
-  "min_spacing","max_spacing","levels","smooth","min_contour_len",
+const RANGES = ["width","mask_threshold","line_spacing","amp","amp_gamma","phase_jitter",
+  "wavelength","freq_amount","min_spacing","max_spacing","levels","smooth","min_contour_len",
   "samples","resample","decimate","stroke_width"];
 
 // mirror each range's min/max/step/value onto its number twin, then keep them synced
@@ -318,8 +329,10 @@ function collect(){
     invert: $("invert").checked,
     mask_enabled: $("mask_enabled").checked, mask_threshold: g("mask_threshold"),
     line_spacing: g("line_spacing"), amp: g("amp"), wavelength: g("wavelength"),
+    amp_gamma: g("amp_gamma"), phase_jitter: g("phase_jitter"),
     freq_mod: $("freq_mod").checked, freq_amount: g("freq_amount"),
     min_spacing: g("min_spacing"), max_spacing: g("max_spacing"),
+    spacing_style: $("spacing_style").value,
     levels: g("levels"), smooth: g("smooth"), min_contour_len: g("min_contour_len"),
     samples: g("samples"), resample: g("resample"), decimate: g("decimate"),
     stroke_width: g("stroke_width"),
@@ -371,6 +384,7 @@ $("units").addEventListener("change", ()=>{
 initPairs();
 ["color"].forEach(id=>$(id).addEventListener("input", debounced));
 ["invert","freq_mod"].forEach(id=>$(id).addEventListener("change", render));
+$("spacing_style").addEventListener("change", render);
 $("mask_enabled").addEventListener("change", ()=>{
   $("mask_ctl").classList.toggle("hide", !$("mask_enabled").checked);
   render();
