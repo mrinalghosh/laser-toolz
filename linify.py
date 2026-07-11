@@ -12,10 +12,11 @@ Design rules (these exist because the output drives a laser, not a pen plotter):
   * Coordinate space is millimetres. The SVG carries width/height in mm plus a
     matching viewBox so it imports at true scale in LightBurn / Illustrator.
 
-Three interchangeable render modes (``--mode``):
+Four interchangeable render modes (``--mode``):
   wavy     displaced scanlines — darkness modulates the wiggle amplitude.
   spacing  density lines — lines pack together in dark regions.
   contour  topographic iso-brightness lines via skimage.measure.find_contours.
+  filet    crochet grid — dark cells become filled squares on an open mesh.
 
 Usage:
   python linify.py INPUT.png -o OUT.svg --mode wavy [params...]
@@ -79,6 +80,13 @@ class Params:
     levels: int = 8                  # brightness quantization bands
     smooth: float = 0.0              # Gaussian sigma applied pre-contour (px)
     min_contour_len: float = 2.0     # drop contours shorter than this (mm)
+
+    # --- filet (crochet grid) ---
+    cells_wide: int = 60             # grid columns; rows derived to keep cells square
+    fill_threshold: float = 0.5      # cell is "filled" when darkness >= this (0..1)
+    fill_style: str = "x"            # filled-cell mark: 'x' | 'cross' | 'hatch'
+    hatch_lines: int = 3             # parallel diagonals per cell when fill_style='hatch'
+    mesh: bool = True                # draw the full grid lattice under the cells
 
 
 # --------------------------------------------------------------------------- #
@@ -374,10 +382,92 @@ def render_contour(gray, p: Params, width_mm, height_mm) -> List[np.ndarray]:
     return polylines
 
 
+# --------------------------------------------------------------------------- #
+# Mode: filet — crochet grid (filled vs. open cells)
+# --------------------------------------------------------------------------- #
+def render_filet(gray, p: Params, width_mm, height_mm) -> List[np.ndarray]:
+    """Filet-crochet chart: quantize the image to a grid of filled / open cells.
+
+    The image is split into square-ish cells (``--cells-wide`` columns, rows
+    derived so cells stay square). A cell is "filled" when its mean darkness
+    clears ``--fill-threshold``; open cells stay empty mesh windows. Tone is
+    binary and purely geometric — a filled cell carries a *mark* (X / cross /
+    hatch), never a heavier stroke.
+
+    The mesh lattice (every cell border) is drawn as long continuous horizontal
+    and vertical hairlines, mirroring real filet mesh and minimising laser
+    travel. ``--no-mesh`` — or enabling the background mask — drops the lattice
+    so only filled cells produce geometry, each with its own outline, floating on
+    blank ground.
+    """
+    cols = max(1, int(p.cells_wide))
+    cw = width_mm / cols
+    rows = max(1, int(round(height_mm / cw)))     # keep cells ~square
+    ch = height_mm / rows
+
+    # Per-cell mean brightness: supersample with bilinear taps, average per cell.
+    ss = 3                                          # taps per cell edge
+    xs = (np.arange(cols * ss) + 0.5) * (cw / ss)
+    ys = (np.arange(rows * ss) + 0.5) * (ch / ss)
+    fine = sample_grid(gray, xs, ys, width_mm, height_mm)      # (rows*ss, cols*ss)
+    bright = fine.reshape(rows, ss, cols, ss).mean(axis=(1, 3))  # (rows, cols)
+    darkness = np.clip(1.0 - bright, 0.0, 1.0)
+
+    filled = darkness >= p.fill_threshold
+    if p.mask_threshold is not None:
+        filled &= bright <= p.mask_threshold        # erase light background cells
+
+    # The mask (or --no-mesh) hides the full lattice; without it, each filled
+    # cell needs its own border box to stay legible on blank ground.
+    draw_mesh = p.mesh and p.mask_threshold is None
+
+    polylines: List[np.ndarray] = []
+
+    if draw_mesh:
+        for j in range(rows + 1):                   # continuous horizontal bars
+            y = j * ch
+            polylines.append(np.array([[0.0, y], [width_mm, y]]))
+        for i in range(cols + 1):                   # continuous vertical bars
+            x = i * cw
+            polylines.append(np.array([[x, 0.0], [x, height_mm]]))
+
+    def hatch_chords(x0, y0):
+        """Evenly spaced 45° chords clipped to the cell — count = tonal density."""
+        n = max(1, int(p.hatch_lines))
+        out = []
+        for k in range(1, n + 1):
+            c = -1.0 + 2.0 * k / (n + 1)            # slope-1 offset in unit square
+            u_lo, u_hi = max(0.0, -c), min(1.0, 1.0 - c)
+            if u_hi - u_lo <= 1e-9:
+                continue
+            out.append(np.array([[x0 + u_lo * cw, y0 + (u_lo + c) * ch],
+                                 [x0 + u_hi * cw, y0 + (u_hi + c) * ch]]))
+        return out
+
+    for j, i in zip(*np.nonzero(filled)):
+        x0, y0 = i * cw, j * ch
+        x1, y1 = x0 + cw, y0 + ch
+        if not draw_mesh:                            # own outline (no lattice)
+            polylines.append(np.array([[x0, y0], [x1, y0], [x1, y1],
+                                       [x0, y1], [x0, y0]]))
+        if p.fill_style == "hatch":
+            polylines.extend(hatch_chords(x0, y0))
+        elif p.fill_style == "cross":                # plus: mid vertical + horizontal
+            xm, ym = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+            polylines.append(np.array([[xm, y0], [xm, y1]]))
+            polylines.append(np.array([[x0, ym], [x1, ym]]))
+        else:                                        # 'x' — two full diagonals
+            polylines.append(np.array([[x0, y0], [x1, y1]]))
+            polylines.append(np.array([[x0, y1], [x1, y0]]))
+
+    return polylines
+
+
 _MODES = {
     "wavy": render_wavy,
     "spacing": render_spacing,
     "contour": render_contour,
+    "filet": render_filet,
 }
 
 
@@ -516,6 +606,19 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Gaussian blur sigma applied pre-contour (px)")
     c.add_argument("--min-contour-len", type=float, default=d.min_contour_len,
                    help="drop contours shorter than this (mm)")
+
+    f = ap.add_argument_group("filet")
+    f.add_argument("--cells-wide", type=int, default=d.cells_wide,
+                   help="grid columns; rows derived to keep cells square")
+    f.add_argument("--fill-threshold", type=float, default=d.fill_threshold,
+                   help="cell is 'filled' when darkness >= this (0..1)")
+    f.add_argument("--fill-style", choices=["x", "cross", "hatch"],
+                   default=d.fill_style,
+                   help="filled-cell mark: 'x' | 'cross' | 'hatch'")
+    f.add_argument("--hatch-lines", type=int, default=d.hatch_lines,
+                   help="parallel diagonals per cell for --fill-style hatch")
+    f.add_argument("--mesh", action=argparse.BooleanOptionalAction, default=d.mesh,
+                   help="draw the full grid lattice (--no-mesh: filled cells only)")
     return ap
 
 

@@ -39,9 +39,9 @@ _NAMES: dict[str, str] = {}
 
 # Explicit type map — can't infer from defaults (amp/mask_threshold default to
 # None) and PEP 563 makes dataclass .type a string, so name the coercion here.
-_BOOL_FIELDS = {"invert", "freq_mod"}
-_INT_FIELDS = {"samples", "resample", "levels"}
-_STR_FIELDS = {"mode", "color", "units", "spacing_style"}
+_BOOL_FIELDS = {"invert", "freq_mod", "mesh"}
+_INT_FIELDS = {"samples", "resample", "levels", "cells_wide", "hatch_lines"}
+_STR_FIELDS = {"mode", "color", "units", "spacing_style", "fill_style"}
 _FLOAT_FIELDS = {f.name for f in fields(Params)} - _BOOL_FIELDS - _INT_FIELDS - _STR_FIELDS
 
 
@@ -384,6 +384,7 @@ _PAGE = r"""<!doctype html>
         <button data-m="wavy" class="on">wavy</button>
         <button data-m="spacing">spacing</button>
         <button data-m="contour">contour</button>
+        <button data-m="filet">filet</button>
       </div>
     </div>
 
@@ -455,19 +456,36 @@ _PAGE = r"""<!doctype html>
       <input type="range" id="min_contour_len" min="0" max="30" step="0.25" value="2">
     </div>
 
+    <!-- filet -->
+    <div class="grp mode-filet hide"><h3>Filet <span class="info" data-tip="Filet-crochet grid: the image is quantized to a grid of filled vs. open cells. Dark cells become filled squares on an open mesh — a chart you could crochet from.">i</span></h3>
+      <label class="row"><span class="lbl">Cells wide<span class="info" data-tip="Number of grid columns. Rows are derived automatically to keep the cells square. More cells = finer detail, smaller squares.">i</span></span> <input class="num" type="number" id="n_cells_wide"></label>
+      <input type="range" id="cells_wide" min="8" max="160" step="1" value="60">
+      <label class="row"><span class="lbl">Fill threshold<span class="info" data-tip="How dark a cell must be to become filled (0–1). Lower = more cells fill in (heavier); higher = only the darkest cells fill.">i</span></span> <input class="num" type="number" id="n_fill_threshold"></label>
+      <input type="range" id="fill_threshold" min="0.05" max="0.95" step="0.01" value="0.5">
+      <label class="row"><span class="lbl">Fill mark<span class="info" data-tip="How a filled cell is drawn (the laser ignores stroke width, so 'filled' must be geometry). X = classic chart cross; cross = plus; hatch = parallel diagonals (most solid / tonal).">i</span></span></label>
+      <select id="fill_style">
+        <option value="x">X — classic filet chart mark</option>
+        <option value="cross">cross — plus (+) mark</option>
+        <option value="hatch">hatch — parallel diagonals (solid)</option>
+      </select>
+      <label class="row mode-filet-hatch hide"><span class="lbl">Hatch lines / cell<span class="info" data-tip="Number of parallel diagonals packed into each filled cell when the fill mark is 'hatch'. More = more solid.">i</span></span> <input class="num" type="number" id="n_hatch_lines"></label>
+      <input type="range" id="hatch_lines" class="mode-filet-hatch hide" min="1" max="10" step="1" value="3">
+      <div class="chk"><input type="checkbox" id="mesh" checked><label for="mesh">Draw mesh grid</label><span class="info" data-tip="Draw the full grid lattice (every cell border) as long continuous hairlines — the open filet mesh. Off: only filled cells are drawn, each with its own outline, floating on blank ground.">i</span></div>
+    </div>
+
     <hr class="sep">
 
-    <!-- advanced (all modes) -->
+    <!-- advanced (rows tagged mode-* apply to a subset; untagged = all modes) -->
     <div class="grp">
       <h3 class="adv-h" id="adv_h">Advanced</h3>
       <div id="adv_body" class="hide">
         <p class="hint">Fine-grained knobs — type exact values into any box above too.</p>
-        <label class="row"><span class="lbl">Samples per line<span class="info" data-tip="Points sampled along each line. More = smoother curves and larger files.">i</span></span> <input class="num" type="number" id="n_samples"></label>
-        <input type="range" id="samples" min="100" max="4000" step="10" value="800">
+        <label class="row mode-wavy mode-spacing"><span class="lbl">Samples per line<span class="info" data-tip="Points sampled along each line. More = smoother curves and larger files. Wavy & spacing only.">i</span></span> <input class="num" type="number" id="n_samples"></label>
+        <input type="range" id="samples" class="mode-wavy mode-spacing" min="100" max="4000" step="10" value="800">
         <label class="row"><span class="lbl">Resample edge (px)<span class="info" data-tip="Working image resolution (longest edge, px). Higher recovers more detail but renders slower.">i</span></span> <input class="num" type="number" id="n_resample"></label>
         <input type="range" id="resample" min="200" max="2000" step="10" value="900">
-        <label class="row"><span class="lbl">Decimation (<span class="uu">mm</span>)<span class="info" data-tip="Collinear-point removal tolerance. Smaller keeps more points (heavier files); larger simplifies.">i</span></span> <input class="num" type="number" id="n_decimate"></label>
-        <input type="range" id="decimate" min="0" max="0.5" step="0.005" value="0.03">
+        <label class="row mode-wavy mode-spacing mode-contour"><span class="lbl">Decimation (<span class="uu">mm</span>)<span class="info" data-tip="Collinear-point removal tolerance. Smaller keeps more points (heavier files); larger simplifies. Not used by filet (grid is already minimal).">i</span></span> <input class="num" type="number" id="n_decimate"></label>
+        <input type="range" id="decimate" class="mode-wavy mode-spacing mode-contour" min="0" max="0.5" step="0.005" value="0.03">
         <label class="row"><span class="lbl">Stroke width (<span class="uu">mm</span>)<span class="info" data-tip="Hairline width. Tonally irrelevant — the laser ignores stroke width — it only affects on-screen visibility.">i</span></span> <input class="num" type="number" id="n_stroke_width"></label>
         <input type="range" id="stroke_width" min="0.001" max="0.5" step="0.001" value="0.02">
       </div>
@@ -533,6 +551,7 @@ function scaleField(id, prevUnit){
 // "width", whose value is in the selected unit and converts to width_mm on send)
 const RANGES = ["width","mask_threshold","line_spacing","amp","amp_gamma","phase_jitter",
   "wavelength","freq_amount","min_spacing","max_spacing","levels","smooth","min_contour_len",
+  "cells_wide","fill_threshold","hatch_lines",
   "samples","resample","decimate","stroke_width"];
 
 // paint the red fill on a range track (webkit reads --p; Firefox uses -moz-range-progress)
@@ -567,6 +586,8 @@ function collect(){
     min_spacing: gmm("min_spacing"), max_spacing: gmm("max_spacing"),
     spacing_style: $("spacing_style").value,
     levels: g("levels"), smooth: g("smooth"), min_contour_len: gmm("min_contour_len"),
+    cells_wide: g("cells_wide"), fill_threshold: g("fill_threshold"),
+    fill_style: $("fill_style").value, hatch_lines: g("hatch_lines"), mesh: $("mesh").checked,
     samples: g("samples"), resample: g("resample"), decimate: gmm("decimate"),
     stroke_width: gmm("stroke_width"),
   };
@@ -595,12 +616,19 @@ $("modes").addEventListener("click", e=>{
   const b = e.target.closest("button"); if(!b) return;
   mode = b.dataset.m;
   [...$("modes").children].forEach(x=>x.classList.toggle("on", x===b));
-  document.querySelectorAll(".mode-wavy,.mode-spacing,.mode-contour")
+  document.querySelectorAll(".mode-wavy,.mode-spacing,.mode-contour,.mode-filet")
     .forEach(el=>el.classList.add("hide"));
   document.querySelectorAll(".mode-"+mode).forEach(el=>el.classList.remove("hide"));
+  if(mode==="filet") syncFiletHatch();   // sub-controls depend on fill style
   updateWarn();
   render();
 });
+
+// filet: hatch-lines control only matters when the fill mark is 'hatch'
+function syncFiletHatch(){
+  const on = mode==="filet" && $("fill_style").value==="hatch";
+  document.querySelectorAll(".mode-filet-hatch").forEach(el=>el.classList.toggle("hide", !on));
+}
 
 // units: preserve every physical size, rescale all length controls into the new unit
 $("units").addEventListener("change", ()=>{
@@ -619,8 +647,9 @@ $("units").addEventListener("change", ()=>{
 
 initPairs();
 ["color"].forEach(id=>$(id).addEventListener("input", debounced));
-["invert","freq_mod"].forEach(id=>$(id).addEventListener("change", render));
+["invert","freq_mod","mesh"].forEach(id=>$(id).addEventListener("change", render));
 $("spacing_style").addEventListener("change", render);
+$("fill_style").addEventListener("change", ()=>{ syncFiletHatch(); render(); });
 $("mask_enabled").addEventListener("change", ()=>{
   $("mask_ctl").classList.toggle("hide", !$("mask_enabled").checked);
   render();

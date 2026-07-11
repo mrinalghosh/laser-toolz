@@ -40,7 +40,7 @@ pip install flask                        # only for the optional web UI
 python linify.py sample.png -o out.svg --mode wavy      # zero tuning needed
 ```
 
-## The three modes
+## The four modes
 
 ### 1. `wavy` — displaced scanlines (the "face-in-lines" look)
 
@@ -110,6 +110,36 @@ python linify.py sample.png -o contour.svg --mode contour \
     --levels 8 --smooth 1.5 --min-contour-len 3
 ```
 
+### 4. `filet` — crochet grid (filled vs. open cells)
+
+Quantizes the image into a grid of **filled and open cells**, exactly like a
+[filet crochet](https://en.wikipedia.org/wiki/Filet_crochet) chart. The image is
+divided into `--cells-wide` columns (rows derived to keep cells square); a cell
+becomes **filled** when its mean darkness clears `--fill-threshold`, and open
+cells stay empty mesh windows. Tone is binary and **purely geometric** — a
+filled cell carries a *mark*, never a heavier stroke.
+
+The mesh lattice (every cell border) is drawn as long continuous horizontal and
+vertical hairlines — real filet mesh, and efficient laser travel. `--fill-style`
+picks how a filled cell reads:
+
+- **`x`** (default): two diagonals — the classic filet chart cross.
+- **`cross`**: a `+` (mid vertical + horizontal).
+- **`hatch`**: `--hatch-lines` parallel diagonals packed into the cell — the most
+  solid / tonal look.
+
+`--no-mesh` (or enabling `--mask-threshold`) drops the background lattice so only
+filled cells are drawn, each with its own outline, floating on blank ground.
+
+```bash
+python linify.py sample.png -o filet.svg --mode filet \
+    --cells-wide 60 --fill-threshold 0.5 --fill-style x
+
+# solid tonal blocks, no background grid, isolated subject
+python linify.py sample.png -o filet.svg --mode filet \
+    --cells-wide 48 --fill-style hatch --hatch-lines 4 --no-mesh --mask-threshold 0.85
+```
+
 ## Background masking
 
 `--mask-threshold T` skips drawing anywhere the (effective) brightness is above
@@ -125,7 +155,7 @@ python linify.py horse.png -o horse.svg --mode wavy --mask-threshold 0.92
 
 | Flag | Default | Applies to | What it does |
 |------|---------|-----------|--------------|
-| `--mode` | `wavy` | all | `wavy` \| `spacing` \| `contour` |
+| `--mode` | `wavy` | all | `wavy` \| `spacing` \| `contour` \| `filet` |
 | `-o, --output` | stdout | all | output SVG path |
 | `--width-mm` | `200` | all | physical output width in mm (height from aspect) |
 | `--units` | `mm` | all | header unit: `mm` \| `cm` \| `in` (`--width-mm` stays mm) |
@@ -149,6 +179,11 @@ python linify.py horse.png -o horse.svg --mode wavy --mask-threshold 0.92
 | `--levels` | `8` | contour | number of brightness bands |
 | `--smooth` | `0` | contour | Gaussian blur sigma pre-contour (px), try 1–2 |
 | `--min-contour-len` | `2` | contour | drop contours shorter than this (mm) |
+| `--cells-wide` | `60` | filet | grid columns (rows derived to keep cells square) |
+| `--fill-threshold` | `0.5` | filet | cell fills when darkness ≥ T (0..1) |
+| `--fill-style` | `x` | filet | filled-cell mark: `x` \| `cross` \| `hatch` |
+| `--hatch-lines` | `3` | filet | parallel diagonals per cell for `--fill-style hatch` |
+| `--mesh` / `--no-mesh` | on | filet | draw the full grid lattice (off = filled cells only) |
 
 ## Verifying the output
 
