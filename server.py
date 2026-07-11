@@ -152,6 +152,7 @@ _PAGE = r"""<!doctype html>
     --bg:#0a0b0d; --panel:#111318; --stage:#050506; --line:#23262d;
     --fg:#e7e9ed; --mut:#767c87; --faint:#171a20; --field:#0d0f13;
     --acc:#ff453a; --acc-fg:#ffffff; --err:#ff6b5e;      /* laser red accent */
+    --warn:#f0a83a;                                      /* amber — caution affordances */
     --paper:#f7f7f4; --shadow:0 18px 60px rgba(0,0,0,.6);
     --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
     --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
@@ -161,6 +162,7 @@ _PAGE = r"""<!doctype html>
       --bg:#f1f1ef; --panel:#ffffff; --stage:#e6e6e3; --line:#e0e0dc;
       --fg:#17181b; --mut:#83868d; --faint:#f5f5f3; --field:#fbfbfa;
       --acc:#e5322a; --acc-fg:#ffffff; --err:#c0392b;
+      --warn:#b26a00;
       --paper:#ffffff; --shadow:0 12px 44px rgba(20,20,25,.14);
     }
   }
@@ -226,6 +228,42 @@ _PAGE = r"""<!doctype html>
          opacity:0; transform:translateY(-3px); transition:opacity .1s,transform .1s; }
   .tip.show { opacity:1; transform:translateY(0); }
 
+  /* ⚠ warning button — click opens the risk modal. Escalates amber→red with settings */
+  .warn { display:inline-flex; align-items:center; justify-content:center; flex:none;
+          gap:4px; margin-left:7px; padding:1px 7px 1px 5px; border-radius:11px;
+          border:1px solid color-mix(in srgb,var(--warn) 55%,var(--line));
+          background:color-mix(in srgb,var(--warn) 12%,transparent); color:var(--warn);
+          font:600 9.5px/1 var(--mono); letter-spacing:.04em; text-transform:uppercase;
+          cursor:pointer; vertical-align:middle; transition:background .12s,border-color .12s,box-shadow .12s; }
+  .warn:hover { background:color-mix(in srgb,var(--warn) 22%,transparent);
+                border-color:var(--warn); }
+  .warn .tri { font-size:10px; }
+  .warn.danger { --warn:var(--err); box-shadow:0 0 0 3px color-mix(in srgb,var(--err) 16%,transparent); }
+
+  /* risk modal — dim backdrop + centered card (sized to never scroll) */
+  .modal-bg { position:fixed; inset:0; z-index:100; display:none; align-items:center;
+              justify-content:center; padding:24px; background:rgba(0,0,0,.55);
+              backdrop-filter:blur(3px); }
+  .modal-bg.show { display:flex; }
+  .modal { max-width:440px; width:100%; background:var(--panel); border:1px solid var(--line);
+           border-radius:12px; box-shadow:0 24px 70px rgba(0,0,0,.6); padding:20px 22px; }
+  .modal h2 { margin:0 0 10px; font:600 14px/1.3 var(--sans); color:var(--fg);
+              display:flex; align-items:center; gap:8px; }
+  .modal h2 .tri { color:var(--warn); font-size:16px; }
+  .modal .risk { display:flex; gap:8px; margin:0 0 8px; padding-left:9px;
+                 border-left:2px solid var(--line); font:11.5px/1.45 var(--sans); }
+  .modal .risk.hot { border-left-color:var(--warn); }
+  .modal .risk b { flex:none; color:var(--fg); }
+  .modal .risk span { color:var(--mut); }
+  .modal .live { margin:11px 0 0; padding:8px 10px; border-radius:7px;
+                 background:var(--faint); border:1px solid var(--line);
+                 font:10.5px/1.5 var(--mono); color:var(--mut); }
+  .modal .live b { color:var(--warn); }
+  .modal .close { margin-top:13px; width:100%; padding:9px; border-radius:7px;
+                  border:1px solid var(--line); background:var(--field); color:var(--fg);
+                  font:600 12px var(--mono); cursor:pointer; transition:opacity .12s; }
+  .modal .close:hover { opacity:.85; }
+
   /* fields */
   input[type=text], select { width:100%; background:var(--field); color:var(--fg);
         border:1px solid var(--line); border-radius:6px; padding:6px 9px; font-family:var(--mono);
@@ -241,6 +279,14 @@ _PAGE = r"""<!doctype html>
          text-align:right; outline:none; -moz-appearance:textfield; font-family:var(--mono);
          transition:border-color .12s,box-shadow .12s; }
   .num::-webkit-outer-spin-button,.num::-webkit-inner-spin-button { -webkit-appearance:none; margin:0; }
+
+  /* danger-range field — red box + red slider fill, but still editable (non-blocking) */
+  .num.danger-field, input[type=text].danger-field { border-color:var(--err);
+        box-shadow:0 0 0 3px color-mix(in srgb,var(--err) 18%,transparent); }
+  input[type=range].danger-field::-webkit-slider-runnable-track {
+        background:linear-gradient(90deg,var(--err) 0 var(--p,0%),var(--line) var(--p,0%) 100%); }
+  input[type=range].danger-field::-moz-range-progress { background:var(--err); }
+  input[type=range].danger-field::-webkit-slider-thumb { box-shadow:0 0 0 2px var(--panel),0 0 0 4px color-mix(in srgb,var(--err) 40%,transparent); }
 
   /* range sliders — thin track, red fill (--p set from JS; Firefox via -moz-range-progress) */
   input[type=range] { -webkit-appearance:none; appearance:none; width:100%; height:16px;
@@ -286,14 +332,18 @@ _PAGE = r"""<!doctype html>
         border-top:4px solid transparent; border-bottom:4px solid transparent; transition:transform .15s; }
   .adv-h.open::before { transform:rotate(90deg); }
 
-  /* upload dropzone — slim single-line bar */
-  .drop { border:1px dashed var(--line); border-radius:7px; padding:7px 12px;
+  /* upload dropzone — slim single-line bar with an upload glyph */
+  .drop { display:flex; align-items:center; justify-content:center; gap:9px;
+          border:1px dashed var(--line); border-radius:7px; padding:8px 12px;
           text-align:center; color:var(--mut); cursor:pointer; font-size:11.5px; font-family:var(--mono);
           line-height:1.35; background:var(--faint); transition:border-color .14s,background .14s,color .14s; }
-  .drop:hover { border-color:var(--mut); }
+  .drop:hover { border-color:var(--mut); color:var(--fg); }
   .drop.hot { border-color:var(--acc); color:var(--fg);
         background:color-mix(in srgb,var(--acc) 9%,var(--faint)); }
   .drop small { color:var(--mut); }
+  .drop .ico { flex:none; width:15px; height:15px; transition:transform .16s; }
+  .drop:hover .ico { transform:translateY(-2px); }   /* arrow lifts on hover */
+  .drop.hot .ico { transform:translateY(-2px); color:var(--acc); }
 
   /* action bar — high-contrast primary (red stays reserved as an accent) */
   .bar { margin-top:16px; }
@@ -324,10 +374,11 @@ _PAGE = r"""<!doctype html>
 </header>
 <div class="wrap">
   <div class="panel">
-    <div id="drop" class="drop">Drop an image, or click to upload&nbsp; <small>PNG / JPG</small></div>
+    <div id="drop" class="drop"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4"/><path d="M7 9l5-5 5 5"/><path d="M5 20h14"/></svg><span>Drop an image, or click to upload &nbsp;<small>PNG / JPG</small></span></div>
     <input id="file" type="file" accept="image/*" class="hide">
 
-    <div class="grp"><h3>Mode</h3>
+    <div class="grp"><h3>Mode
+      <button type="button" id="wavyWarn" class="warn" title="Laser-cutter risks of short-wavelength wavy"><span class="tri">⚠</span>Laser risks</button></h3>
       <div class="modes" id="modes">
         <button data-m="wavy" class="on">wavy</button>
         <button data-m="spacing">spacing</button>
@@ -434,6 +485,21 @@ _PAGE = r"""<!doctype html>
 </div>
 <div id="tip" class="tip"></div>
 
+<!-- short-wavelength wavy → laser-cutter risk modal (Epilog Mini) -->
+<div id="warnBg" class="modal-bg">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="warnTitle">
+    <h2 id="warnTitle"><span class="tri">⚠</span>Short-wavelength wavy — Epilog Mini</h2>
+    <div class="risk" id="risk-wear"><b>Motion wear</b><span>Rapid reversals jerk-load the belts &amp; bearings. One job won't misalign it (firmware caps jerk, it re-homes), but sustained sub-2&nbsp;mm λ stretches belts and drifts registration over time.</span></div>
+    <div class="risk" id="risk-burn"><b>Over-burn</b><span>The head dwells at each turnaround, so packed cusps char, widen kerf and can flare up on wood/acrylic — the most immediate hazard.</span></div>
+    <div class="risk" id="risk-reso"><b>Resonance</b><span>Reversal rate near the gantry's resonance causes chatter and blurred waves.</span></div>
+    <div class="risk" id="risk-res"><b>Wasted detail</b><span>Under ~0.5–1&nbsp;mm, kerf + slop smear the wiggle into a scorched band.</span></div>
+
+    <p class="live" id="warnLive"></p>
+
+    <button type="button" class="close" id="warnClose">Got it</button>
+  </div>
+</div>
+
 <script>
 const $ = id => document.getElementById(id);
 let imgId = null, mode = "wavy", unit = "mm", timer = null;
@@ -531,6 +597,7 @@ $("modes").addEventListener("click", e=>{
   document.querySelectorAll(".mode-wavy,.mode-spacing,.mode-contour")
     .forEach(el=>el.classList.add("hide"));
   document.querySelectorAll(".mode-"+mode).forEach(el=>el.classList.remove("hide"));
+  updateWarn();
   render();
 });
 
@@ -622,6 +689,44 @@ document.addEventListener("mouseover", e=>{
 document.addEventListener("mouseout", e=>{
   if(e.target.closest(".info")) tip.classList.remove("show");
 });
+
+// short-wavelength wavy → laser-cutter risk warning
+const warnBtn = $("wavyWarn"), warnBg = $("warnBg");
+function warnState(){
+  const wl_mm = (+$("wavelength").value) * MM_PER[unit];            // set wavelength, in mm
+  // frequency modulation shortens the effective wavelength in dark regions (d_row→1):
+  // inv_wl = (1/wl)*(1+freq_amount)  ⇒  eff wavelength = wl/(1+freq_amount)
+  const eff = $("freq_mod").checked ? wl_mm/(1 + (+$("freq_amount").value)) : wl_mm;
+  return { wl_mm, eff, danger: eff <= 2, caution: eff <= 4 };
+}
+function updateWarn(){
+  const s = warnState();
+  // wavelength only matters in wavy mode — don't cry danger from a stale value elsewhere
+  const danger = s.danger && mode === "wavy";
+  warnBtn.classList.toggle("danger", danger);
+  // paint the wavelength field red (non-blocking — user can still cut)
+  ["wavelength","n_wavelength"].forEach(id=>$(id).classList.toggle("danger-field", danger));
+  ["risk-wear","risk-burn","risk-res"].forEach(id=>$(id).classList.toggle("hot", s.caution && mode==="wavy"));
+  const pitch = (s.eff/2).toFixed(2);
+  const fm = $("freq_mod").checked ? ` (effective ${s.eff.toFixed(2)} mm with freq-mod)` : "";
+  const lead = s.danger ? "<b>DANGER — </b>" : s.caution ? "<b>Caution — </b>" : "";
+  $("warnLive").innerHTML =
+    `${lead}wavelength ${s.wl_mm.toFixed(2)} mm${fm} → head reverses every `
+    + `<b>${pitch} mm</b>. ` + (s.danger
+        ? "Slow the job, lower power, and watch it — never run unattended."
+        : s.caution ? "Getting short — keep λ ≥ ~4 mm for clean, low-stress cuts."
+        : "Comfortable range for the Epilog Mini.");
+}
+warnBtn.addEventListener("click", ()=>{ updateWarn(); warnBg.classList.add("show"); });
+function closeWarn(){ warnBg.classList.remove("show"); }
+$("warnClose").addEventListener("click", closeWarn);
+warnBg.addEventListener("click", e=>{ if(e.target===warnBg) closeWarn(); });
+document.addEventListener("keydown", e=>{ if(e.key==="Escape") closeWarn(); });
+["wavelength","n_wavelength","freq_amount","n_freq_amount"].forEach(id=>
+  $(id).addEventListener("input", updateWarn));
+$("freq_mod").addEventListener("change", updateWarn);
+$("units").addEventListener("change", updateWarn);
+updateWarn();
 </script>
 </body>
 </html>"""
