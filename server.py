@@ -15,16 +15,21 @@ from __future__ import annotations
 
 import io
 import re
+import logging
 import os.path
 import uuid
 from dataclasses import fields
 
 from flask import Flask, jsonify, request, Response
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
 from linify import Params, image_to_svg
 
 app = Flask(__name__)
+
+# Quiet the per-request access log — it spams the CLI on every slider drag
+# (each render is a POST). Warnings/errors still surface.
+logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
 # In-memory stores keyed by token. Local single-user tool, so plain dicts are
 # fine — no persistence, cleared on restart. _NAMES keeps the uploaded file's
@@ -72,9 +77,18 @@ def _params_from_json(data: dict) -> Params:
 @app.post("/upload")
 def upload():
     if "image" not in request.files:
-        return jsonify(error="no image"), 400
+        return jsonify(error="no file received"), 400
     upload = request.files["image"]
-    img = Image.open(io.BytesIO(upload.read())).convert("L")
+    raw = upload.read()
+    if not raw:
+        return jsonify(error="the file is empty"), 400
+    name = upload.filename or "file"
+    try:
+        img = Image.open(io.BytesIO(raw))
+        img.load()  # force a full decode so truncated/corrupt data fails here
+        img = img.convert("L")
+    except (UnidentifiedImageError, OSError, ValueError):
+        return jsonify(error=f"couldn't read '{name}' — not a valid image file"), 400
     token = uuid.uuid4().hex
     _IMAGES[token] = img
     _NAMES[token] = _safe_stem(upload.filename)
@@ -199,6 +213,19 @@ _PAGE = r"""<!doctype html>
   label.row:first-child { margin-top:0; }
   .hint { color:var(--mut); font-size:10.5px; margin:2px 0 0; font-family:var(--sans); }
 
+  /* (i) info dot — hover to reveal a tooltip (positioned by JS, see #tip) */
+  .info { display:inline-flex; align-items:center; justify-content:center; flex:none;
+          width:13px; height:13px; margin-left:5px; border:1px solid var(--line); border-radius:50%;
+          color:var(--mut); font:italic 600 9px/1 var(--sans); cursor:help; vertical-align:middle;
+          transition:color .12s,border-color .12s; }
+  .info:hover { color:var(--acc); border-color:var(--acc); }
+  .lbl { display:inline-flex; align-items:center; }   /* keep text + (i) together */
+  .tip { position:fixed; z-index:50; max-width:240px; padding:7px 10px; border-radius:6px;
+         background:var(--panel); color:var(--fg); border:1px solid var(--line);
+         box-shadow:0 8px 30px rgba(0,0,0,.45); font:11px/1.45 var(--sans); pointer-events:none;
+         opacity:0; transform:translateY(-3px); transition:opacity .1s,transform .1s; }
+  .tip.show { opacity:1; transform:translateY(0); }
+
   /* fields */
   input[type=text], select { width:100%; background:var(--field); color:var(--fg);
         border:1px solid var(--line); border-radius:6px; padding:6px 9px; font-family:var(--mono);
@@ -311,25 +338,25 @@ _PAGE = r"""<!doctype html>
     <hr class="sep">
 
     <div class="grp"><h3>Output</h3>
-      <label class="row">Units</label>
+      <label class="row"><span class="lbl">Units<span class="info" data-tip="Physical unit for the export header and every length field below. Only the labeling changes — the geometry imports at true scale either way.">i</span></span></label>
       <select id="units">
         <option value="mm">millimetres (mm)</option>
         <option value="in">inches (in)</option>
         <option value="cm">centimetres (cm)</option>
       </select>
-      <label class="row"><span>Width (<span id="u_width">mm</span>)</span> <input class="num" type="number" id="n_width"></label>
+      <label class="row"><span class="lbl">Width (<span id="u_width">mm</span>)<span class="info" data-tip="Physical output width. Height is derived automatically from the image's aspect ratio.">i</span></span> <input class="num" type="number" id="n_width"></label>
       <input type="range" id="width" min="20" max="1000" step="1" value="200">
-      <label class="row">Color</label>
+      <label class="row"><span class="lbl">Color<span class="info" data-tip="Single stroke color for every line. Use red for a cut layer, black to engrave — width never encodes tone.">i</span></span></label>
       <input type="text" id="color" value="black">
       <div class="swatches">
         <button style="background:#000" data-c="black" title="black (engrave)"></button>
         <button style="background:#e23" data-c="red" title="red (cut)"></button>
         <button style="background:#26f" data-c="blue" title="blue"></button>
       </div>
-      <div class="chk"><input type="checkbox" id="invert"><label for="invert">Invert tones</label></div>
-      <div class="chk"><input type="checkbox" id="mask_enabled"><label for="mask_enabled">Mask background</label></div>
+      <div class="chk"><input type="checkbox" id="invert"><label for="invert">Invert tones</label><span class="info" data-tip="Swap the dark↔light tonal encoding (and flip what counts as background for masking).">i</span></div>
+      <div class="chk"><input type="checkbox" id="mask_enabled"><label for="mask_enabled">Mask background</label><span class="info" data-tip="Draw nothing where brightness is above the threshold — erases a light background so only the subject is rendered.">i</span></div>
       <div id="mask_ctl" class="hide">
-        <label class="row"><span>Mask threshold</span> <input class="num" type="number" id="n_mask_threshold"></label>
+        <label class="row"><span class="lbl">Mask threshold<span class="info" data-tip="Brightness cutoff for masking (0–1). Higher keeps more of the image; lower erases more of the background.">i</span></span> <input class="num" type="number" id="n_mask_threshold"></label>
         <input type="range" id="mask_threshold" min="0.5" max="1" step="0.01" value="0.9">
       </div>
     </div>
@@ -337,44 +364,42 @@ _PAGE = r"""<!doctype html>
     <hr class="sep">
 
     <!-- wavy -->
-    <div class="grp mode-wavy"><h3>Wavy</h3>
-      <label class="row"><span>Line spacing (mm)</span> <input class="num" type="number" id="n_line_spacing"></label>
+    <div class="grp mode-wavy"><h3>Wavy <span class="info" data-tip="Displaced horizontal scanlines: darkness modulates the wiggle amplitude (the face-in-lines look).">i</span></h3>
+      <label class="row"><span class="lbl">Line spacing (<span class="uu">mm</span>)<span class="info" data-tip="Distance between scanline baselines — sets how many lines are drawn.">i</span></span> <input class="num" type="number" id="n_line_spacing"></label>
       <input type="range" id="line_spacing" min="0.5" max="8" step="0.05" value="2">
-      <label class="row"><span>Amplitude (mm)</span> <input class="num" type="number" id="n_amp"></label>
+      <label class="row"><span class="lbl">Amplitude (<span class="uu">mm</span>)<span class="info" data-tip="Maximum wiggle size. Auto-clamped below half the line spacing so adjacent lines can never cross.">i</span></span> <input class="num" type="number" id="n_amp"></label>
       <input type="range" id="amp" min="0" max="4" step="0.02" value="1">
-      <label class="row"><span>Amplitude gamma</span> <input class="num" type="number" id="n_amp_gamma"></label>
+      <label class="row"><span class="lbl">Amplitude gamma<span class="info" data-tip="Amplitude response curve. Below 1 lifts midtones so mid-gray wiggles hard — more contrast in the darks. Untuned (1.0) looks flat.">i</span></span> <input class="num" type="number" id="n_amp_gamma"></label>
       <input type="range" id="amp_gamma" min="0.2" max="2" step="0.05" value="1">
-      <p class="hint">&lt;1 lifts midtones — more contrast in the darks</p>
-      <label class="row"><span>Phase jitter</span> <input class="num" type="number" id="n_phase_jitter"></label>
+      <label class="row"><span class="lbl">Phase jitter<span class="info" data-tip="Per-line phase offset (0–1). Decorrelates scanlines so bulges stop aligning into vertical banding — reads as woven ink.">i</span></span> <input class="num" type="number" id="n_phase_jitter"></label>
       <input type="range" id="phase_jitter" min="0" max="1" step="0.02" value="0">
-      <p class="hint">decorrelates lines — breaks vertical banding</p>
-      <label class="row"><span>Wavelength (mm)</span> <input class="num" type="number" id="n_wavelength"></label>
+      <label class="row"><span class="lbl">Wavelength (<span class="uu">mm</span>)<span class="info" data-tip="Carrier wavelength of the horizontal waves — the spacing of one full wiggle.">i</span></span> <input class="num" type="number" id="n_wavelength"></label>
       <input type="range" id="wavelength" min="1" max="30" step="0.25" value="8">
-      <div class="chk"><input type="checkbox" id="freq_mod"><label for="freq_mod">Frequency modulation</label></div>
-      <label class="row"><span>Frequency amount</span> <input class="num" type="number" id="n_freq_amount"></label>
+      <div class="chk"><input type="checkbox" id="freq_mod"><label for="freq_mod">Frequency modulation</label><span class="info" data-tip="Also raise the wave frequency (not just amplitude) in dark regions, so shadows get a denser, faster wiggle.">i</span></div>
+      <label class="row"><span class="lbl">Frequency amount<span class="info" data-tip="Strength of frequency modulation (0–2). Only takes effect when Frequency modulation is enabled.">i</span></span> <input class="num" type="number" id="n_freq_amount"></label>
       <input type="range" id="freq_amount" min="0" max="2" step="0.05" value="1">
     </div>
 
     <!-- spacing -->
-    <div class="grp mode-spacing hide"><h3>Spacing</h3>
-      <label class="row">Style</label>
+    <div class="grp mode-spacing hide"><h3>Spacing <span class="info" data-tip="Density lines: horizontal lines pack closer in dark regions and spread apart in light ones.">i</span></h3>
+      <label class="row"><span class="lbl">Style<span class="info" data-tip="clean = crisp lines clipped to the subject (silhouette). density = per-column accumulation, recovers internal shading but looks dottier.">i</span></span></label>
       <select id="spacing_style">
         <option value="clean">clean — crisp lines, silhouette</option>
         <option value="density">density — internal shading (dottier)</option>
       </select>
-      <label class="row"><span>Minimum spacing / dark (mm)</span> <input class="num" type="number" id="n_min_spacing"></label>
+      <label class="row"><span class="lbl">Minimum spacing / dark (<span class="uu">mm</span>)<span class="info" data-tip="Line spacing in the darkest regions — how tightly lines pack in the shadows.">i</span></span> <input class="num" type="number" id="n_min_spacing"></label>
       <input type="range" id="min_spacing" min="0.1" max="4" step="0.02" value="0.6">
-      <label class="row"><span>Maximum spacing / light (mm)</span> <input class="num" type="number" id="n_max_spacing"></label>
+      <label class="row"><span class="lbl">Maximum spacing / light (<span class="uu">mm</span>)<span class="info" data-tip="Line spacing in the lightest regions — how far lines spread in the highlights.">i</span></span> <input class="num" type="number" id="n_max_spacing"></label>
       <input type="range" id="max_spacing" min="0.5" max="12" step="0.05" value="4">
     </div>
 
     <!-- contour -->
-    <div class="grp mode-contour hide"><h3>Contour</h3>
-      <label class="row"><span>Levels</span> <input class="num" type="number" id="n_levels"></label>
+    <div class="grp mode-contour hide"><h3>Contour <span class="info" data-tip="Topographic iso-lines: brightness is quantized into bands and each equal-brightness contour is traced.">i</span></h3>
+      <label class="row"><span class="lbl">Levels<span class="info" data-tip="Number of brightness bands. More levels = more contour lines and finer tonal steps.">i</span></span> <input class="num" type="number" id="n_levels"></label>
       <input type="range" id="levels" min="2" max="40" step="1" value="8">
-      <label class="row"><span>Smoothing (sigma px)</span> <input class="num" type="number" id="n_smooth"></label>
+      <label class="row"><span class="lbl">Smoothing (sigma px)<span class="info" data-tip="Gaussian blur applied before tracing (sigma in px). Try 1–2 to smooth jagged contours.">i</span></span> <input class="num" type="number" id="n_smooth"></label>
       <input type="range" id="smooth" min="0" max="6" step="0.1" value="1.5">
-      <label class="row"><span>Minimum contour length (mm)</span> <input class="num" type="number" id="n_min_contour_len"></label>
+      <label class="row"><span class="lbl">Minimum contour length (<span class="uu">mm</span>)<span class="info" data-tip="Drop any contour shorter than this — removes speckle and tiny stray loops.">i</span></span> <input class="num" type="number" id="n_min_contour_len"></label>
       <input type="range" id="min_contour_len" min="0" max="30" step="0.25" value="2">
     </div>
 
@@ -385,13 +410,13 @@ _PAGE = r"""<!doctype html>
       <h3 class="adv-h" id="adv_h">Advanced</h3>
       <div id="adv_body" class="hide">
         <p class="hint">Fine-grained knobs — type exact values into any box above too.</p>
-        <label class="row"><span>Samples per line</span> <input class="num" type="number" id="n_samples"></label>
+        <label class="row"><span class="lbl">Samples per line<span class="info" data-tip="Points sampled along each line. More = smoother curves and larger files.">i</span></span> <input class="num" type="number" id="n_samples"></label>
         <input type="range" id="samples" min="100" max="4000" step="10" value="800">
-        <label class="row"><span>Resample edge (px)</span> <input class="num" type="number" id="n_resample"></label>
+        <label class="row"><span class="lbl">Resample edge (px)<span class="info" data-tip="Working image resolution (longest edge, px). Higher recovers more detail but renders slower.">i</span></span> <input class="num" type="number" id="n_resample"></label>
         <input type="range" id="resample" min="200" max="2000" step="10" value="900">
-        <label class="row"><span>Decimation (mm)</span> <input class="num" type="number" id="n_decimate"></label>
+        <label class="row"><span class="lbl">Decimation (<span class="uu">mm</span>)<span class="info" data-tip="Collinear-point removal tolerance. Smaller keeps more points (heavier files); larger simplifies.">i</span></span> <input class="num" type="number" id="n_decimate"></label>
         <input type="range" id="decimate" min="0" max="0.5" step="0.005" value="0.03">
-        <label class="row"><span>Stroke width (mm)</span> <input class="num" type="number" id="n_stroke_width"></label>
+        <label class="row"><span class="lbl">Stroke width (<span class="uu">mm</span>)<span class="info" data-tip="Hairline width. Tonally irrelevant — the laser ignores stroke width — it only affects on-screen visibility.">i</span></span> <input class="num" type="number" id="n_stroke_width"></label>
         <input type="range" id="stroke_width" min="0.001" max="0.5" step="0.001" value="0.02">
       </div>
     </div>
@@ -407,6 +432,7 @@ _PAGE = r"""<!doctype html>
     <div class="stat" id="stat"></div>
   </div>
 </div>
+<div id="tip" class="tip"></div>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -414,6 +440,27 @@ let imgId = null, mode = "wavy", unit = "mm", timer = null;
 
 const MM_PER = { mm:1, cm:10, in:25.4 };
 const WIDTH_CFG = { mm:{min:20,max:1000,step:1}, cm:{min:2,max:100,step:0.1}, in:{min:1,max:40,step:0.1} };
+
+// length fields whose values track the selected unit. Base ranges are stored in
+// mm and rescaled on unit change; on send they convert back to mm (collect()).
+// Everything not listed here is unit-agnostic (px counts, ratios, 0..1).
+const MM_FIELDS = {
+  line_spacing:{min:0.5,max:8,step:0.05}, amp:{min:0,max:4,step:0.02},
+  wavelength:{min:1,max:30,step:0.25}, min_spacing:{min:0.1,max:4,step:0.02},
+  max_spacing:{min:0.5,max:12,step:0.05}, min_contour_len:{min:0,max:30,step:0.25},
+  decimate:{min:0,max:0.5,step:0.005}, stroke_width:{min:0.001,max:0.5,step:0.001},
+};
+const unitRound = v => +v.toFixed(unit==="mm" ? 3 : 4);
+
+// rescale one length field into the current unit, holding its physical size constant
+function scaleField(id, prevUnit){
+  const base=MM_FIELDS[id], r=$(id), n=$("n_"+id), f=MM_PER[unit];
+  const mm=(+r.value)*MM_PER[prevUnit];
+  const mn=unitRound(base.min/f), mx=unitRound(base.max/f), st=base.step/f;
+  const v=Math.min(mx, Math.max(mn, unitRound(mm/f)));
+  [r,n].forEach(el=>{ el.min=mn; el.max=mx; el.step=st; el.value=v; });
+  fillRange(id);
+}
 
 // every control with a range + paired number input (id === Params field, except
 // "width", whose value is in the selected unit and converts to width_mm on send)
@@ -440,20 +487,21 @@ function initPairs(){
 }
 
 function collect(){
-  const g = id => +$(id).value;
+  const g = id => +$(id).value;                  // unit-agnostic (px, ratios, counts)
+  const gmm = id => +$(id).value * MM_PER[unit];  // length fields -> mm for the backend
   return {
     id: imgId, mode, units: unit,
-    width_mm: g("width") * MM_PER[unit], color: $("color").value,
+    width_mm: gmm("width"), color: $("color").value,
     invert: $("invert").checked,
     mask_enabled: $("mask_enabled").checked, mask_threshold: g("mask_threshold"),
-    line_spacing: g("line_spacing"), amp: g("amp"), wavelength: g("wavelength"),
+    line_spacing: gmm("line_spacing"), amp: gmm("amp"), wavelength: gmm("wavelength"),
     amp_gamma: g("amp_gamma"), phase_jitter: g("phase_jitter"),
     freq_mod: $("freq_mod").checked, freq_amount: g("freq_amount"),
-    min_spacing: g("min_spacing"), max_spacing: g("max_spacing"),
+    min_spacing: gmm("min_spacing"), max_spacing: gmm("max_spacing"),
     spacing_style: $("spacing_style").value,
-    levels: g("levels"), smooth: g("smooth"), min_contour_len: g("min_contour_len"),
-    samples: g("samples"), resample: g("resample"), decimate: g("decimate"),
-    stroke_width: g("stroke_width"),
+    levels: g("levels"), smooth: g("smooth"), min_contour_len: gmm("min_contour_len"),
+    samples: g("samples"), resample: g("resample"), decimate: gmm("decimate"),
+    stroke_width: gmm("stroke_width"),
   };
 }
 
@@ -486,17 +534,18 @@ $("modes").addEventListener("click", e=>{
   render();
 });
 
-// units: preserve the physical size, rescale the width control into the new unit
+// units: preserve every physical size, rescale all length controls into the new unit
 $("units").addEventListener("change", ()=>{
-  const mm = (+$("width").value) * MM_PER[unit];   // hold physical width constant
+  const prev = unit;
   unit = $("units").value;
+  // width has its own (wider) per-unit range table; the rest share MM_FIELDS
+  const wmm = (+$("width").value) * MM_PER[prev];
   const cfg = WIDTH_CFG[unit];
-  ["width","n_width"].forEach(id=>{ const el=$(id); el.min=cfg.min; el.max=cfg.max; el.step=cfg.step; });
-  let v = mm / MM_PER[unit];
-  v = Math.min(cfg.max, Math.max(cfg.min, +v.toFixed(3)));
-  $("width").value = v; $("n_width").value = v;
+  const wv = Math.min(cfg.max, Math.max(cfg.min, +(wmm/MM_PER[unit]).toFixed(3)));
+  ["width","n_width"].forEach(id=>{ const el=$(id); el.min=cfg.min; el.max=cfg.max; el.step=cfg.step; el.value=wv; });
   fillRange("width");
-  $("u_width").textContent = unit;
+  Object.keys(MM_FIELDS).forEach(id=>scaleField(id, prev));
+  document.querySelectorAll(".uu, #u_width").forEach(el=>el.textContent=unit);
   render();
 });
 
@@ -517,21 +566,36 @@ document.querySelectorAll(".swatches button").forEach(b=>
 
 // upload
 const drop = $("drop"), file = $("file");
+const DROP_HTML = drop.innerHTML;          // initial prompt — restored if an upload fails
 drop.addEventListener("click", ()=>file.click());
-file.addEventListener("change", ()=>{ if(file.files[0]) upload(file.files[0]); });
+// clear the input's value after reading so re-picking the same file still fires "change"
+file.addEventListener("change", ()=>{ const f=file.files[0]; file.value=""; if(f) upload(f); });
 ["dragover","dragenter"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add("hot");}));
 ["dragleave","drop"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove("hot");}));
 drop.addEventListener("drop", e=>{ const f=e.dataTransfer.files[0]; if(f) upload(f); });
 
 async function upload(f){
-  const fd = new FormData(); fd.append("image", f);
+  if(f.type && !f.type.startsWith("image/")){
+    $("err").textContent = `“${f.name}” isn't an image file`; return;
+  }
+  $("err").textContent = "";
   drop.textContent = "uploading…";
-  const r = await fetch("/upload",{method:"POST",body:fd});
-  const j = await r.json();
-  if(j.error){ $("err").textContent=j.error; return; }
-  imgId = j.id;
-  drop.innerHTML = `${f.name} · ${j.w}×${j.h}px<br><small>downloads as ${j.name}_${mode}.svg · click to replace</small>`;
-  render();
+  const fd = new FormData(); fd.append("image", f);
+  try{
+    const r = await fetch("/upload",{method:"POST",body:fd});
+    const j = await r.json().catch(()=>({error:`server error (${r.status})`}));
+    if(!r.ok || j.error){
+      $("err").textContent = j.error || `upload failed (${r.status})`;
+      drop.innerHTML = DROP_HTML;
+      return;
+    }
+    imgId = j.id;
+    drop.innerHTML = `${f.name} · ${j.w}×${j.h}px<br><small>downloads as ${j.name}_${mode}.svg · click to replace</small>`;
+    render();
+  }catch(e){
+    $("err").textContent = "upload failed — is the server still running?";
+    drop.innerHTML = DROP_HTML;
+  }
 }
 
 $("dl").addEventListener("click", ()=>{
@@ -540,6 +604,23 @@ $("dl").addEventListener("click", ()=>{
   const q = new URLSearchParams();
   Object.entries(p).forEach(([k,v])=>q.set(k, typeof v==="boolean" ? (v?"1":"0") : v));
   window.location = "/download?"+q.toString();
+});
+
+// tooltips: one floating box, positioned under the hovered (i) and clamped to the viewport
+const tip = $("tip");
+document.addEventListener("mouseover", e=>{
+  const i = e.target.closest(".info"); if(!i) return;
+  tip.textContent = i.dataset.tip || "";
+  tip.classList.add("show");
+  const r = i.getBoundingClientRect(), pad = 8;
+  const tw = tip.offsetWidth, th = tip.offsetHeight;
+  let x = Math.max(pad, Math.min(r.left + r.width/2 - tw/2, innerWidth - tw - pad));
+  let y = r.bottom + 7;
+  if(y + th + pad > innerHeight) y = r.top - th - 7;   // flip above if it would overflow
+  tip.style.left = x + "px"; tip.style.top = y + "px";
+});
+document.addEventListener("mouseout", e=>{
+  if(e.target.closest(".info")) tip.classList.remove("show");
 });
 </script>
 </body>
