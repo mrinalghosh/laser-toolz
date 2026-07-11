@@ -64,6 +64,8 @@ class Params:
     # --- wavy ---
     line_spacing: float = 2.0        # mm between scanline baselines
     amp: Optional[float] = None      # max wiggle amplitude mm (None => spacing/2)
+    amp_gamma: float = 1.0           # amplitude response curve (<1 lifts midtones)
+    phase_jitter: float = 0.0        # per-line phase decorrelation (0..1)
     wavelength: float = 8.0          # carrier wavelength mm
     freq_mod: bool = False           # also raise spatial frequency in dark areas
     freq_amount: float = 1.0         # how strongly freq_mod bites (0..~2)
@@ -71,6 +73,7 @@ class Params:
     # --- spacing ---
     min_spacing: float = 0.6         # mm between lines in the darkest regions
     max_spacing: float = 4.0         # mm between lines in the lightest regions
+    spacing_style: str = "clean"     # 'clean' (masked full lines) | 'density' (per-column)
 
     # --- contour ---
     levels: int = 8                  # brightness quantization bands
@@ -200,9 +203,16 @@ def split_runs(pts, keep):
 def render_wavy(gray, p: Params, width_mm, height_mm) -> List[np.ndarray]:
     """Horizontal scanlines whose amplitude tracks darkness.
 
-    y_out = y_base + A(b) * sin(phase(x)),  A = maxAmp * (1 - b)
+    y_out = y_base + A(b) * sin(phase(x)),  A = maxAmp * darkness**amp_gamma
     Dark => big wiggle (flip with --invert). maxAmp is clamped to < spacing/2
     so adjacent scanlines can never cross.
+
+    Two contrast levers, both pure geometry (stroke width is never touched):
+      * amp_gamma < 1 lifts midtones up the amplitude curve, so mid-gray wiggles
+        hard instead of rippling gently — the amplitude clamp alone gives weak
+        contrast because a linear map only nears full swing at pure black.
+      * phase_jitter offsets each scanline's phase so bulges stop lining up into
+        vertical columns (the moiré/banding artifact of a shared phase).
     """
     spacing = p.line_spacing
     n_lines = max(1, int(round(height_mm / spacing)))
@@ -218,17 +228,24 @@ def render_wavy(gray, p: Params, width_mm, height_mm) -> List[np.ndarray]:
     bright = sample_grid(gray, xs, ys_base, width_mm, height_mm)  # (n_lines, samples)
     darkness = 1.0 - bright
 
+    # Per-line phase offset: golden-ratio increments spread the offsets evenly
+    # (and deterministically) around the circle, scaled by phase_jitter (0=off).
+    _GOLDEN = 0.6180339887498949
+    phase0 = 2.0 * np.pi * p.phase_jitter * ((np.arange(n_lines) * _GOLDEN) % 1.0)
+
+    gamma = max(1e-6, p.amp_gamma)
+
     polylines = []
     for i in range(n_lines):
-        d_row = darkness[i]
-        amp = max_amp * d_row
+        d_row = np.clip(darkness[i], 0.0, 1.0)
+        amp = max_amp * (d_row ** gamma if gamma != 1.0 else d_row)
         if p.freq_mod:
             # Higher spatial frequency in dark regions. Integrate the local
             # wavenumber so the wave stays phase-continuous across x.
             inv_wl = (1.0 / p.wavelength) * (1.0 + p.freq_amount * d_row)
-            phase = 2.0 * np.pi * dx * np.cumsum(inv_wl)
+            phase = phase0[i] + 2.0 * np.pi * dx * np.cumsum(inv_wl)
         else:
-            phase = 2.0 * np.pi * xs / p.wavelength
+            phase = phase0[i] + 2.0 * np.pi * xs / p.wavelength
         y = ys_base[i] + amp * np.sin(phase)
         pts = np.column_stack([xs, y])
 
@@ -246,15 +263,24 @@ def render_wavy(gray, p: Params, width_mm, height_mm) -> List[np.ndarray]:
 # Mode: spacing — density lines
 # --------------------------------------------------------------------------- #
 def render_spacing(gray, p: Params, width_mm, height_mm) -> List[np.ndarray]:
-    """Horizontal lines whose vertical density tracks darkness.
+    """Horizontal lines whose density tracks darkness — two styles.
 
-    We walk top->bottom in fine steps, accumulating dy / spacing(darkness).
-    Each time the accumulator crosses 1.0 we emit a line: dark rows have small
-    local spacing so the accumulator fills faster => lines pack closer.
+    We walk top->bottom in fine steps. Both styles share the idea that dark ⇒
+    small local spacing ⇒ lines pack closer, but they differ in how they use the
+    horizontal axis (the full 2D brightness field `bright`, not just its mean):
 
-    Honest tradeoff: this variant carries VERTICAL tonal detail well but is
-    coarse HORIZONTALLY (each line is a full-width horizontal). That's expected
-    and is the whole point of the mode — pick `contour` if you need form.
+      clean   (B) Vertical packing is driven by each row's MEAN darkness, giving
+                  crisp continuous horizontal lines. Each line is then clipped to
+                  the columns that are locally dark enough to "want" a line at
+                  that pitch, so lines break across light gaps and terminate at
+                  the subject — recovering silhouette/form while staying clean.
+      density (A) Every column carries its OWN accumulator, so ink lands per
+                  (row, column): dark columns fire often, light columns rarely.
+                  Adjacent same-tone columns fire on the same rows and fuse into
+                  horizontal runs, so internal shading appears — at the cost of a
+                  dithery / broken look near tonal boundaries.
+
+    Neither touches stroke width; tone is entirely where-ink-lands (geometry).
     """
     step = max(1e-4, min(p.min_spacing, p.max_spacing) / 6.0)  # fine vertical step
     n_rows = max(1, int(round(height_mm / step)))
@@ -262,24 +288,42 @@ def render_spacing(gray, p: Params, width_mm, height_mm) -> List[np.ndarray]:
 
     xs = np.linspace(0.0, width_mm, p.samples)
     bright = sample_grid(gray, xs, ys, width_mm, height_mm)     # (n_rows, samples)
-    row_dark = np.clip(1.0 - bright.mean(axis=1), 0.0, 1.0)     # mean darkness / row
 
-    # spacing_local: dark -> min_spacing, light -> max_spacing
+    # spacing_local(darkness): dark -> min_spacing, light -> max_spacing
     lo, hi = min(p.min_spacing, p.max_spacing), max(p.min_spacing, p.max_spacing)
-    spacing_local = hi + (lo - hi) * row_dark
+    dark2d = np.clip(1.0 - bright, 0.0, 1.0)                    # per (row, col)
+    s_col = hi + (lo - hi) * dark2d                             # local spacing / col
 
     polylines = []
+
+    if p.spacing_style == "density":
+        # A — per-column accumulators; emit whatever columns cross on each row.
+        acc = np.zeros(len(xs))
+        for r in range(n_rows):
+            acc += step / s_col[r]
+            fire = acc >= 1.0
+            acc[fire] -= 1.0
+            if p.mask_threshold is not None:
+                fire = fire & (bright[r] <= p.mask_threshold)
+            if not fire.any():
+                continue
+            pts = np.column_stack([xs, np.full_like(xs, ys[r])])
+            for run in split_runs(pts, fire):
+                polylines.append(rdp(run, p.decimate))
+        return polylines
+
+    # B (default 'clean') — row-mean packing, each line clipped to columns that
+    # locally want a line at least this dense (s_col <= the row's pitch).
+    row_pitch = hi + (lo - hi) * dark2d.mean(axis=1)            # per-row spacing
     acc = 0.0
     for r in range(n_rows):
-        acc += step / spacing_local[r]
+        acc += step / row_pitch[r]
         if acc >= 1.0:
             acc -= 1.0
-            y = ys[r]
-            pts = np.column_stack([xs, np.full_like(xs, y)])
+            keep = s_col[r] <= row_pitch[r] + 1e-9     # dark-enough columns
             if p.mask_threshold is not None:
-                keep = bright[r] <= p.mask_threshold
-            else:
-                keep = np.ones(len(xs), dtype=bool)
+                keep = keep & (bright[r] <= p.mask_threshold)
+            pts = np.column_stack([xs, np.full_like(xs, ys[r])])
             for run in split_runs(pts, keep):
                 polylines.append(rdp(run, p.decimate))
     return polylines
@@ -444,6 +488,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="mm between scanline baselines")
     w.add_argument("--amp", type=float, default=d.amp,
                    help="max wiggle amplitude mm (default spacing/2, clamped)")
+    w.add_argument("--amp-gamma", type=float, default=d.amp_gamma,
+                   help="amplitude response curve; <1 lifts midtones (more contrast)")
+    w.add_argument("--phase-jitter", type=float, default=d.phase_jitter,
+                   help="per-line phase decorrelation 0..1 (breaks vertical banding)")
     w.add_argument("--wavelength", type=float, default=d.wavelength,
                    help="carrier wavelength in mm")
     w.add_argument("--freq-mod", action="store_true",
@@ -456,6 +504,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="mm between lines in the darkest regions")
     s.add_argument("--max-spacing", type=float, default=d.max_spacing,
                    help="mm between lines in the lightest regions")
+    s.add_argument("--spacing-style", choices=["clean", "density"],
+                   default=d.spacing_style,
+                   help="'clean' = crisp lines clipped to form; "
+                        "'density' = per-column shading (detailed but dithery)")
 
     c = ap.add_argument_group("contour")
     c.add_argument("--levels", type=int, default=d.levels,
