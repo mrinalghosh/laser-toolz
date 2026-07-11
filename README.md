@@ -1,4 +1,8 @@
-# linify — image → laser-ready SVG line art
+# laser-toolz
+
+Tools to generate and manipulate SVGs for the Epilog laser cutter.
+
+## linify — image → laser-ready SVG line art
 
 Convert any raster image into **continuous hairline SVG lines** for laser
 cutting / perforation. Three interchangeable render modes, one parametric CLI,
@@ -53,19 +57,46 @@ python linify.py sample.png -o wavy.svg --mode wavy \
     --mask-threshold 0.9 --freq-mod
 ```
 
+**Getting contrast out of it.** Amplitude alone is a weak tonal cue (line count
+and spacing are identical in light and dark; only the wiggle size changes), and a
+shared phase makes every bulge line up into vertical banding. Two pure-geometry
+knobs fix that:
+
+- **`--amp-gamma`** (`<1`, try `0.5`) lifts midtones up the amplitude curve, so
+  mid-gray actually wiggles hard instead of rippling gently. The default linear
+  map only nears full swing at pure black, which is why untuned output looks flat.
+- **`--phase-jitter`** (`0..1`, try `0.5`) gives each scanline its own phase so
+  bulges stop aligning into columns — the surface reads as woven, organic ink.
+
+```bash
+python linify.py sample.png -o wavy.svg --mode wavy \
+    --amp-gamma 0.5 --phase-jitter 0.6
+```
+
 ### 2. `spacing` — density lines
 
 Horizontal lines that **pack closer in dark regions** and spread apart in light
-ones. Implemented by walking top→bottom, accumulating a row-darkness integral,
-and emitting a line each time it crosses a threshold.
+ones. Implemented by walking top→bottom, accumulating a darkness integral, and
+emitting a line each time it crosses a threshold. `--spacing-style` chooses how
+the horizontal axis is used — the difference between an outline and a full
+tonal rendering:
 
-> Honest tradeoff: this mode carries **vertical** tonal detail well but is
-> **coarse horizontally** (each line is a full-width horizontal). That's
-> expected — reach for `contour` if you need form.
+- **`clean`** (default): vertical packing is driven by each row's mean darkness,
+  giving crisp continuous horizontal lines, then each line is **clipped to the
+  columns locally dark enough to want it** — so lines break across light gaps and
+  terminate at the subject. You get the **silhouette / form**, clean enough to
+  cut, with no internal noise.
+- **`density`**: every column carries its own accumulator, so ink lands
+  per-(row, column) — dark columns fire often and fuse into horizontal runs,
+  light columns stay bare. This recovers **internal shading** (a real tonal
+  portrait) at the cost of a **dithery / broken** look near tonal boundaries.
 
 ```bash
 python linify.py sample.png -o spacing.svg --mode spacing \
-    --min-spacing 0.6 --max-spacing 4
+    --min-spacing 0.6 --max-spacing 4 --spacing-style clean
+
+python linify.py sample.png -o spacing.svg --mode spacing \
+    --spacing-style density        # detailed shading, dottier
 ```
 
 ### 3. `contour` — topographic iso-lines
@@ -107,11 +138,14 @@ python linify.py horse.png -o horse.svg --mode wavy --mask-threshold 0.92
 | `--resample` | `900` | all | working image resolution, longest edge (px) |
 | `--line-spacing` | `2` | wavy | mm between scanline baselines (sets line count) |
 | `--amp` | spacing/2 | wavy | max wiggle amplitude mm (auto-clamped < spacing/2) |
+| `--amp-gamma` | `1.0` | wavy | amplitude response curve; `<1` lifts midtones (contrast) |
+| `--phase-jitter` | `0` | wavy | per-line phase decorrelation `0..1` (breaks banding) |
 | `--wavelength` | `8` | wavy | carrier wavelength in mm |
 | `--freq-mod` | off | wavy | also raise spatial frequency in dark regions |
 | `--freq-amount` | `1.0` | wavy | strength of `--freq-mod` (0..~2) |
 | `--min-spacing` | `0.6` | spacing | mm between lines in the darkest regions |
 | `--max-spacing` | `4` | spacing | mm between lines in the lightest regions |
+| `--spacing-style` | `clean` | spacing | `clean` (silhouette) \| `density` (internal shading) |
 | `--levels` | `8` | contour | number of brightness bands |
 | `--smooth` | `0` | contour | Gaussian blur sigma pre-contour (px), try 1–2 |
 | `--min-contour-len` | `2` | contour | drop contours shorter than this (mm) |
