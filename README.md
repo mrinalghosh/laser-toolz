@@ -200,15 +200,17 @@ both are chosen so a few-thousand-dot portrait renders in well under a second.
 The **spiky, neo-tribal "organic-technology" look**: whip-like tendrils that flow
 along the form — using the same structure-tensor tangent field as `flow`, so they
 wrap the subject like veins or circuit-traces rather than scribbling at random —
-**curling harder toward a needle tip** and sprouting **swept-back thorns** at
-intervals (the barbed-wire signature). Tone stays pure geometry: darker regions
-seed **more** tendrils and grow them **longer**; nothing touches stroke width.
+**curling harder toward a needle tip** and sprouting **thorns on alternating
+sides** at intervals (the barbed-wire signature). Each thorn **emerges tangent to
+the stem and curves off like a flame** — a smooth join, not a straight stick
+stabbed across the line — then tapers to a point. Tone stays pure geometry: darker
+regions seed **more** tendrils and grow them **longer**; nothing touches stroke width.
 
 The needle taper is the crux. Because the laser can't taper a stroke, a sharp
 spike has to be a *shape*: `--cyber-spike sliver` (default) renders each tendril
 and barb as a **closed outline that converges to a point** — a solid thorn even
 in hairline (~2× the paths). `--cyber-spike stroke` is a lighter alternative: a
-single **flick-out V** per barb and a bare centerline per tendril.
+single **curved flick** per barb and a bare centerline per tendril.
 
 ```bash
 # dense, barbed-hatching portrait (isolated subject)
@@ -229,7 +231,8 @@ python linify.py sample.png -o sigil.svg --mode cyber --mask-threshold 0.9 \
 - **`--cyber-curl`** / **`--cyber-taper`** set how whip-like each tendril reads —
   more curl hooks the tip, higher taper sharpens the needle.
 - **`--cyber-barb-spacing`** `0` gives bare tendrils (no thorns);
-  **`--cyber-barb-angle`** rakes the thorns flatter as it rises.
+  **`--cyber-barb-angle`** sets how far each thorn curls off the stem (`0` flush,
+  `90` a quarter-turn hook, `>120` curling back).
 - **`--cyber-symmetry mirror`** mirrors the left half across the vertical center
   for the centered, sigil-like composition; **`--cyber-nodes`** dots each tendril
   root with a small circle (the techno accent).
@@ -298,7 +301,7 @@ python linify.py horse.png -o horse.svg --mode wavy --mask-threshold 0.92
 | `--cyber-taper` | `1.6` | cyber | width falloff exponent (higher = whippier needle tip) |
 | `--cyber-barb-spacing` | `3.2` | cyber | mm between thorns along a tendril (`0` = none) |
 | `--cyber-barb-len` | `3.4` | cyber | mm thorn length at the root (shrinks toward the tip) |
-| `--cyber-barb-angle` | `42` | cyber | deg thorn sweep-back off the tendril axis |
+| `--cyber-barb-angle` | `90` | cyber | deg a thorn curls through (emerges tangent; `0` flush, `90` quarter-turn hook, `>120` curls back) |
 | `--cyber-spike` | `sliver` | cyber | spike geometry: `sliver` (tapered outline) \| `stroke` (single V) |
 | `--cyber-symmetry` | `none` | cyber | `none` \| `mirror` (reflect left half across center) |
 | `--cyber-nodes` | off | cyber | draw a small circle node at each tendril root |

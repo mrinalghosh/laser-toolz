@@ -119,7 +119,7 @@ class Params:
     cyber_taper: float = 1.6         # tendril width falloff exponent (higher = whippier tip)
     cyber_barb_spacing: float = 3.2  # mm between barbs along a tendril (0 = no barbs)
     cyber_barb_len: float = 3.4      # mm barb length at the root (shrinks toward the tip)
-    cyber_barb_angle: float = 42.0   # deg barb sweep-back off the tendril axis
+    cyber_barb_angle: float = 90.0   # deg a thorn curls through (emerges tangent; 90 = quarter-turn hook)
     cyber_spike: str = "sliver"      # spike geometry: 'sliver' (tapered outline) | 'stroke' (single V)
     cyber_symmetry: str = "none"     # composition: 'none' | 'mirror' (reflect left half across center)
     cyber_nodes: bool = False        # draw a small circle node at each tendril root
@@ -890,6 +890,23 @@ def _rot(vx, vy, ang):
     return ca * vx - sa * vy, sa * vx + ca * vy
 
 
+def _hook_curve(attach, gx, gy, side, length, total_turn, n=9):
+    """Curved-thorn centerline that grows *out of* a tendril, not through it.
+
+    The barb leaves the stem **tangent** to the growth direction (gx, gy) — so the
+    join is smooth, no arrowhead-through-a-line kink — then sweeps along a circular
+    arc through `total_turn` radians to `side`, ending at a sharp tip. A straight
+    barb reads as a stick stabbed across the stem; this reads as organic growth.
+    """
+    steps = max(2, n)
+    seg = length / (steps - 1)
+    ang = side * total_turn * (np.arange(steps) / (steps - 1))   # 0 -> total_turn
+    dx, dy = _rot(gx, gy, ang)                       # dir rotates along the arc; dir[0] == g
+    px = attach[0] + np.concatenate([[0.0], np.cumsum(dx[:-1])]) * seg
+    py = attach[1] + np.concatenate([[0.0], np.cumsum(dy[:-1])]) * seg
+    return np.column_stack([px, py])
+
+
 def render_cyber(gray, p: Params, width_mm, height_mm) -> List[np.ndarray]:
     """Cybersigilism — barbed tendrils that flow along the form.
 
@@ -971,7 +988,7 @@ def render_cyber(gray, p: Params, width_mm, height_mm) -> List[np.ndarray]:
         traj.append(np.column_stack([X, Y]))
     traj = np.stack(traj, axis=1)                       # (n, maxsteps+1, 2)
 
-    barb_ang = np.radians(180.0 - p.cyber_barb_angle)   # swept back off the axis
+    barb_turn = np.radians(p.cyber_barb_angle)          # gentle flame curl off the stem
     node_r = 0.45 * p.cyber_width
     _CIRC = np.linspace(0.0, 2.0 * np.pi, 13)
     polylines: List[np.ndarray] = []
@@ -986,18 +1003,15 @@ def render_cyber(gray, p: Params, width_mm, height_mm) -> List[np.ndarray]:
         if out is not None:
             polylines.append(rdp(out, p.decimate))
 
-    def emit_barb(attach, gx, gy, w_root, length):
-        """A short swept-back thorn rooted at `attach`, growing off the axis."""
+    def emit_barb(attach, gx, gy, w_root, length, side):
+        """One curved thorn rooted at `attach`, emerging tangent to the stem."""
         if length <= 1e-4:
             return
-        for side in (+1.0, -1.0):
-            bx, by = _rot(gx, gy, barb_ang * side)
-            tip = attach + np.array([bx, by]) * length
-            if p.cyber_spike == "stroke":               # thin flick-out V to a point
-                perp = np.array([-gy, gx]) * (0.12 * w_root + 1e-3)
-                polylines.append(np.array([attach + perp * side, tip]))
-            else:
-                emit_spike(np.array([attach, tip]), w_root)
+        curve = _hook_curve(attach, gx, gy, side, length, barb_turn)
+        if p.cyber_spike == "stroke":                   # single curved flick to a point
+            polylines.append(rdp(curve, p.decimate))
+        else:
+            emit_spike(curve, w_root)                   # tapered curved thorn
 
     for m in range(n):
         e = int(end_i[m])
@@ -1018,6 +1032,7 @@ def render_cyber(gray, p: Params, width_mm, height_mm) -> List[np.ndarray]:
             cum = np.concatenate([[0.0], np.cumsum(seglen)])
             total = cum[-1]
             s = p.cyber_barb_spacing
+            bi = 0
             while s < total - 1e-6:
                 j = int(np.searchsorted(cum, s) - 1)
                 j = max(0, min(j, len(seg) - 1))
@@ -1027,9 +1042,11 @@ def render_cyber(gray, p: Params, width_mm, height_mm) -> List[np.ndarray]:
                 gx, gy = gx / gnorm, gy / gnorm
                 t = s / total                           # 0 root .. 1 tip
                 w_here = p.cyber_width * (1.0 - t) ** max(1e-6, p.cyber_taper)
+                side = 1.0 if bi % 2 == 0 else -1.0     # alternate: thorned-vine, not fishbone
                 emit_barb(attach, gx, gy, max(w_here, 0.15 * p.cyber_width),
-                          p.cyber_barb_len * (1.0 - 0.7 * t))
+                          p.cyber_barb_len * (1.0 - 0.7 * t), side)
                 s += p.cyber_barb_spacing
+                bi += 1
 
     if mirror:                                          # reflect the left half across center
         for pl in list(polylines):
@@ -1257,7 +1274,8 @@ def build_parser() -> argparse.ArgumentParser:
     cy.add_argument("--cyber-barb-len", type=float, default=d.cyber_barb_len,
                     help="mm barb length at the root (shrinks toward the tip)")
     cy.add_argument("--cyber-barb-angle", type=float, default=d.cyber_barb_angle,
-                    help="deg barb sweep-back off the tendril axis")
+                    help="deg a thorn curls through; emerges tangent to the stem "
+                         "(0 = flush, 90 = quarter-turn hook, >120 curls back)")
     cy.add_argument("--cyber-spike", choices=["sliver", "stroke"], default=d.cyber_spike,
                     help="spike geometry: 'sliver' (tapered outline) | 'stroke' (single V)")
     cy.add_argument("--cyber-symmetry", choices=["none", "mirror"], default=d.cyber_symmetry,

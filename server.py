@@ -541,8 +541,8 @@ _PAGE = r"""<!doctype html>
       <input type="range" id="cyber_barb_spacing" min="0" max="10" step="0.1" value="3.2">
       <label class="row"><span class="lbl">Barb length (<span class="uu">mm</span>)<span class="info" data-tip="Length of each thorn at the tendril root (shrinks toward the tip).">i</span></span> <input class="num" type="number" id="n_cyber_barb_len"></label>
       <input type="range" id="cyber_barb_len" min="0.5" max="8" step="0.1" value="3.4">
-      <label class="row"><span class="lbl">Barb angle (deg)<span class="info" data-tip="How far each thorn sweeps back off the tendril axis. Higher = flatter, more raked-back barbs.">i</span></span> <input class="num" type="number" id="n_cyber_barb_angle"></label>
-      <input type="range" id="cyber_barb_angle" min="10" max="80" step="1" value="42">
+      <label class="row"><span class="lbl">Barb curl (deg)<span class="info" data-tip="How far each thorn curls as it grows. Thorns emerge tangent to the tendril (smooth join, no arrowhead): 0 = flush with the stem, 90 = a quarter-turn hook, above ~120 curls back over the stem.">i</span></span> <input class="num" type="number" id="n_cyber_barb_angle"></label>
+      <input type="range" id="cyber_barb_angle" min="0" max="150" step="1" value="90">
       <label class="row"><span class="lbl">Field coherence (sigma px)<span class="info" data-tip="Structure-tensor blur that averages the tendril direction. Higher = smoother, more coherent flow; lower follows fine detail (and noise).">i</span></span> <input class="num" type="number" id="n_cyber_smooth"></label>
       <input type="range" id="cyber_smooth" min="1" max="20" step="0.5" value="8">
       <label class="row"><span class="lbl">Integration step (<span class="uu">mm</span>)<span class="info" data-tip="Distance marched per step along a tendril. Smaller = smoother curls and more points; larger = coarser, lighter files.">i</span></span> <input class="num" type="number" id="n_cyber_step"></label>
