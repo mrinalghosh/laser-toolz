@@ -39,10 +39,11 @@ _NAMES: dict[str, str] = {}
 
 # Explicit type map — can't infer from defaults (amp/mask_threshold default to
 # None) and PEP 563 makes dataclass .type a string, so name the coercion here.
-_BOOL_FIELDS = {"invert", "freq_mod", "mesh"}
+_BOOL_FIELDS = {"invert", "freq_mod", "mesh", "islands_only"}
 _INT_FIELDS = {"samples", "resample", "levels", "cells_wide", "hatch_lines",
                "points", "tsp_improve"}
-_STR_FIELDS = {"mode", "color", "units", "spacing_style", "fill_style"}
+_STR_FIELDS = {"mode", "color", "units", "spacing_style", "fill_style",
+               "smooth_mode", "contour_source"}
 _FLOAT_FIELDS = {f.name for f in fields(Params)} - _BOOL_FIELDS - _INT_FIELDS - _STR_FIELDS
 
 
@@ -457,6 +458,17 @@ _PAGE = r"""<!doctype html>
       <input type="range" id="smooth" min="0" max="6" step="0.1" value="1.5">
       <label class="row"><span class="lbl">Minimum contour length (<span class="uu">mm</span>)<span class="info" data-tip="Drop any contour shorter than this — removes speckle and tiny stray loops.">i</span></span> <input class="num" type="number" id="n_min_contour_len"></label>
       <input type="range" id="min_contour_len" min="0" max="30" step="0.25" value="2">
+      <label class="row"><span class="lbl">Trace<span class="info" data-tip="'Tone' traces iso-brightness bands (classic). 'Edge' traces the gradient magnitude, so contours hug every boundary — an edge-forensic look with the same speckle character.">i</span></span>
+        <select id="contour_source"><option value="tone">tone (brightness)</option><option value="edge">edge (gradient)</option></select></label>
+      <label class="row"><span class="lbl">Smoothing kernel<span class="info" data-tip="'Gaussian' blurs across edges (softens everything). 'Bilateral' is edge-preserving: it flattens flat regions to kill garbage contours while keeping boundaries razor-sharp and small high-contrast specks intact.">i</span></span>
+        <select id="smooth_mode"><option value="gaussian">gaussian</option><option value="bilateral">bilateral (edge-preserving)</option></select></label>
+      <label class="row"><span class="lbl">Bilateral edge hardness<span class="info" data-tip="Tonal sigma for the bilateral kernel (0–1). Smaller = harder edges / more preserved detail; larger acts more like a plain blur. Only used when the smoothing kernel is bilateral.">i</span></span> <input class="num" type="number" id="n_bilateral_color"></label>
+      <input type="range" id="bilateral_color" min="0.02" max="0.5" step="0.01" value="0.1">
+      <div class="chk"><input type="checkbox" id="islands_only"><label for="islands_only">Islands only</label><span class="info" data-tip="Keep only closed loops and drop the long open contours — a pure speckle-field of the small artifacts. Pair with a Maximum contour length to also discard big loops.">i</span></div>
+      <label class="row"><span class="lbl">Minimum contour area (mm²)<span class="info" data-tip="Drop closed loops enclosing less than this area. Unlike Minimum length (a perimeter), this filters by blob size — a long thin sliver survives, a tiny compact loop doesn't. 0 = off.">i</span></span> <input class="num" type="number" id="n_min_contour_area"></label>
+      <input type="range" id="min_contour_area" min="0" max="50" step="0.5" value="0">
+      <label class="row"><span class="lbl">Maximum contour length (<span class="uu">mm</span>)<span class="info" data-tip="Drop any contour longer than this — discards the big backbone contours and keeps the small artifacts. 0 = off.">i</span></span> <input class="num" type="number" id="n_max_contour_len"></label>
+      <input type="range" id="max_contour_len" min="0" max="200" step="1" value="0">
     </div>
 
     <!-- filet -->
@@ -560,6 +572,7 @@ const MM_FIELDS = {
   line_spacing:{min:0.5,max:8,step:0.05}, amp:{min:0,max:4,step:0.02},
   wavelength:{min:1,max:30,step:0.25}, min_spacing:{min:0.1,max:4,step:0.02},
   max_spacing:{min:0.5,max:12,step:0.05}, min_contour_len:{min:0,max:30,step:0.25},
+  max_contour_len:{min:0,max:200,step:1},
   flow_spacing:{min:0.4,max:5,step:0.05}, flow_len:{min:1,max:30,step:0.5},
   flow_step:{min:0.1,max:1.5,step:0.05},
   decimate:{min:0,max:0.5,step:0.005}, stroke_width:{min:0.001,max:0.5,step:0.001},
@@ -580,6 +593,7 @@ function scaleField(id, prevUnit){
 // "width", whose value is in the selected unit and converts to width_mm on send)
 const RANGES = ["width","mask_threshold","line_spacing","amp","amp_gamma","phase_jitter",
   "wavelength","freq_amount","min_spacing","max_spacing","levels","smooth","min_contour_len",
+  "bilateral_color","min_contour_area","max_contour_len",
   "cells_wide","fill_threshold","hatch_lines",
   "flow_spacing","flow_len","flow_smooth","flow_step","flow_gamma",
   "points","point_gamma","tsp_improve",
@@ -617,6 +631,9 @@ function collect(){
     min_spacing: gmm("min_spacing"), max_spacing: gmm("max_spacing"),
     spacing_style: $("spacing_style").value,
     levels: g("levels"), smooth: g("smooth"), min_contour_len: gmm("min_contour_len"),
+    smooth_mode: $("smooth_mode").value, contour_source: $("contour_source").value,
+    bilateral_color: g("bilateral_color"), islands_only: $("islands_only").checked,
+    min_contour_area: g("min_contour_area"), max_contour_len: gmm("max_contour_len"),
     cells_wide: g("cells_wide"), fill_threshold: g("fill_threshold"),
     fill_style: $("fill_style").value, hatch_lines: g("hatch_lines"), mesh: $("mesh").checked,
     flow_spacing: gmm("flow_spacing"), flow_len: gmm("flow_len"), flow_step: gmm("flow_step"),
@@ -681,8 +698,10 @@ $("units").addEventListener("change", ()=>{
 
 initPairs();
 ["color"].forEach(id=>$(id).addEventListener("input", debounced));
-["invert","freq_mod","mesh"].forEach(id=>$(id).addEventListener("change", render));
+["invert","freq_mod","mesh","islands_only"].forEach(id=>$(id).addEventListener("change", render));
 $("spacing_style").addEventListener("change", render);
+$("contour_source").addEventListener("change", render);
+$("smooth_mode").addEventListener("change", render);
 $("fill_style").addEventListener("change", ()=>{ syncFiletHatch(); render(); });
 $("mask_enabled").addEventListener("change", ()=>{
   $("mask_ctl").classList.toggle("hide", !$("mask_enabled").checked);

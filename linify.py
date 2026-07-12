@@ -80,8 +80,14 @@ class Params:
 
     # --- contour ---
     levels: int = 8                  # brightness quantization bands
-    smooth: float = 0.0              # Gaussian sigma applied pre-contour (px)
+    smooth: float = 0.0              # blur sigma applied pre-contour (px)
     min_contour_len: float = 2.0     # drop contours shorter than this (mm)
+    smooth_mode: str = "gaussian"    # pre-contour blur: 'gaussian' | 'bilateral' (edge-preserving)
+    bilateral_color: float = 0.1     # bilateral tonal sigma (0..1); smaller = harder edges
+    contour_source: str = "tone"     # trace on 'tone' (brightness) or 'edge' (gradient magnitude)
+    min_contour_area: float = 0.0    # drop closed loops enclosing < this (mm^2); 0 = off
+    max_contour_len: float = 0.0     # drop contours longer than this (mm); 0 = off
+    islands_only: bool = False       # keep only closed loops (drop open/border contours)
 
     # --- filet (crochet grid) ---
     cells_wide: int = 60             # grid columns; rows derived to keep cells square
@@ -381,41 +387,71 @@ def render_spacing(gray, p: Params, width_mm, height_mm) -> List[np.ndarray]:
 def render_contour(gray, p: Params, width_mm, height_mm) -> List[np.ndarray]:
     """Iso-brightness contours — organic lines that follow the form.
 
-    Quantize brightness into `levels` bands and trace each iso-line with
-    skimage.measure.find_contours. --smooth blurs first to kill jaggies;
-    --min-contour-len drops tiny noise loops.
+    Quantize the contour field into `levels` bands and trace each iso-line with
+    skimage.measure.find_contours. --smooth blurs first to kill jaggies
+    (--smooth-mode bilateral preserves edges); --contour-source edge traces the
+    gradient magnitude instead of brightness. --min-contour-len / --max-contour-len
+    / --min-contour-area / --islands-only curate which contours survive.
     """
     from skimage import measure  # imported lazily: only this mode needs skimage
 
     img = gray
     if p.smooth > 0:
-        from skimage.filters import gaussian
-        img = gaussian(img, sigma=p.smooth)
+        if p.smooth_mode == "bilateral":
+            # Edge-preserving: flattens flat regions (kills garbage contours)
+            # while keeping boundaries crisp, so iso-lines snap hard to edges.
+            from skimage.restoration import denoise_bilateral
+            img = denoise_bilateral(img, sigma_color=p.bilateral_color,
+                                    sigma_spatial=p.smooth, channel_axis=None)
+        else:
+            from skimage.filters import gaussian
+            img = gaussian(img, sigma=p.smooth)
 
-    h, w = img.shape
+    # The field we trace: brightness (tone) or gradient magnitude (edge).
+    field = img
+    if p.contour_source == "edge":
+        from skimage.filters import sobel
+        field = sobel(img)
+
+    h, w = field.shape
     sx = width_mm / (w - 1) if w > 1 else width_mm     # mm per pixel-column
     sy = height_mm / (h - 1) if h > 1 else height_mm   # mm per pixel-row
 
-    # Evenly spaced iso levels strictly inside the image's value range.
-    lo, hi = float(img.min()), float(img.max())
+    # Evenly spaced iso levels strictly inside the field's value range.
+    lo, hi = float(field.min()), float(field.max())
     if hi - lo < 1e-6:
         return []
     levels = np.linspace(lo, hi, p.levels + 2)[1:-1]
 
     polylines = []
     for lv in levels:
-        # Masking: a contour at level `lv` has brightness ~= lv everywhere, so
-        # "skip where brightness > threshold" == skip contour levels above it.
-        # This is what erases a near-white background.
-        if p.mask_threshold is not None and lv > p.mask_threshold:
+        # Masking is tonal (erases a near-white background): a contour at level
+        # `lv` has brightness ~= lv everywhere, so "skip where brightness >
+        # threshold" == skip levels above it. Meaningless on the edge field, so
+        # only applied when tracing tone.
+        if (p.contour_source == "tone" and p.mask_threshold is not None
+                and lv > p.mask_threshold):
             continue
-        for c in measure.find_contours(img, lv):
+        for c in measure.find_contours(field, lv):
             # find_contours returns (row, col); convert to mm (x, y).
             pts = np.column_stack([c[:, 1] * sx, c[:, 0] * sy])
+            # A loop is "closed" when its endpoints coincide; open contours
+            # touch the image border and have no meaningful enclosed area.
+            closed = len(pts) >= 4 and np.allclose(pts[0], pts[-1])
+            if p.islands_only and not closed:
+                continue
             seg = np.diff(pts, axis=0)
             length = float(np.hypot(seg[:, 0], seg[:, 1]).sum())
             if length < p.min_contour_len:
                 continue
+            if p.max_contour_len > 0 and length > p.max_contour_len:
+                continue
+            if p.min_contour_area > 0 and closed:
+                x, y = pts[:, 0], pts[:, 1]           # shoelace area (mm^2)
+                area = 0.5 * abs(float(np.dot(x, np.roll(y, -1))
+                                       - np.dot(y, np.roll(x, -1))))
+                if area < p.min_contour_area:
+                    continue
             polylines.append(rdp(pts, p.decimate))
     return polylines
 
@@ -877,6 +913,21 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Gaussian blur sigma applied pre-contour (px)")
     c.add_argument("--min-contour-len", type=float, default=d.min_contour_len,
                    help="drop contours shorter than this (mm)")
+    c.add_argument("--smooth-mode", choices=["gaussian", "bilateral"],
+                   default=d.smooth_mode,
+                   help="pre-contour blur: 'gaussian' or edge-preserving 'bilateral'")
+    c.add_argument("--bilateral-color", type=float, default=d.bilateral_color,
+                   help="bilateral tonal sigma (0..1); smaller = harder edges")
+    c.add_argument("--contour-source", choices=["tone", "edge"],
+                   default=d.contour_source,
+                   help="trace 'tone' (brightness) or 'edge' (gradient magnitude)")
+    c.add_argument("--min-contour-area", type=float, default=d.min_contour_area,
+                   help="drop closed loops enclosing less than this (mm^2); 0 = off")
+    c.add_argument("--max-contour-len", type=float, default=d.max_contour_len,
+                   help="drop contours longer than this (mm); 0 = off")
+    c.add_argument("--islands-only", action=argparse.BooleanOptionalAction,
+                   default=d.islands_only,
+                   help="keep only closed loops (drop open/border contours)")
 
     f = ap.add_argument_group("filet")
     f.add_argument("--cells-wide", type=int, default=d.cells_wide,
