@@ -108,6 +108,22 @@ class Params:
     point_gamma: float = 1.0         # darkness weighting for dot density (<1 lifts midtones)
     tsp_improve: int = 2             # interleaved 2-opt + or-opt refinement passes (0 = raw Hilbert seed)
 
+    # --- cyber (cybersigilism: barbed tendrils along the form) ---
+    cyber_smooth: float = 8.0        # structure-tensor blur sigma (px) — tendril-field coherence
+    cyber_spacing: float = 3.0       # mm between tendril seeds (grid pitch)
+    cyber_len: float = 16.0          # mm base tendril arc length (scaled up in shadow)
+    cyber_step: float = 0.5          # mm integration step along a tendril
+    cyber_gamma: float = 1.0         # seed-density response curve (<1 lifts midtones)
+    cyber_curl: float = 5.0          # deg/step hook — tendrils curl harder toward the tip
+    cyber_width: float = 1.1         # mm root width of a tendril sliver (geometry, not stroke)
+    cyber_taper: float = 1.6         # tendril width falloff exponent (higher = whippier tip)
+    cyber_barb_spacing: float = 3.2  # mm between barbs along a tendril (0 = no barbs)
+    cyber_barb_len: float = 3.4      # mm barb length at the root (shrinks toward the tip)
+    cyber_barb_angle: float = 42.0   # deg barb sweep-back off the tendril axis
+    cyber_spike: str = "sliver"      # spike geometry: 'sliver' (tapered outline) | 'stroke' (single V)
+    cyber_symmetry: str = "none"     # composition: 'none' | 'mirror' (reflect left half across center)
+    cyber_nodes: bool = False        # draw a small circle node at each tendril root
+
 
 # --------------------------------------------------------------------------- #
 # Image loading / sampling
@@ -839,6 +855,191 @@ def render_tsp(gray, p: Params, width_mm, height_mm) -> List[np.ndarray]:
     return [rdp(P[order], p.decimate)]
 
 
+# --------------------------------------------------------------------------- #
+# Mode: cyber — cybersigilism (barbed tendrils that flow along the form)
+# --------------------------------------------------------------------------- #
+def _polyline_normals(c):
+    """Unit left-normals at every vertex of a centerline `c` (M,2)."""
+    d = np.gradient(c, axis=0)                          # local tangents
+    norm = np.hypot(d[:, 0], d[:, 1]) + 1e-12
+    tx, ty = d[:, 0] / norm, d[:, 1] / norm
+    return np.column_stack([-ty, tx])                   # rotate tangent +90°
+
+
+def _taper_sliver(c, w_root, taper_pow):
+    """A closed outline hugging centerline `c`, tapering from `w_root` to a point.
+
+    The laser can't taper a stroke, so a needle-sharp spike must be a *shape*:
+    two offset curves that start `w_root` apart at the root and converge to the
+    tip. Returned as one closed polyline (down the left offset, back up the right).
+    """
+    m = len(c)
+    if m < 2:
+        return None
+    t = np.linspace(0.0, 1.0, m)
+    half = 0.5 * w_root * (1.0 - t) ** max(1e-6, taper_pow)   # -> 0 at the tip
+    nrm = _polyline_normals(c)
+    left = c + nrm * half[:, None]
+    right = c - nrm * half[:, None]
+    return np.vstack([left, right[::-1], left[:1]])     # closed loop
+
+
+def _rot(vx, vy, ang):
+    """Rotate vector components (vx, vy) by `ang` radians (scalar or array)."""
+    ca, sa = np.cos(ang), np.sin(ang)
+    return ca * vx - sa * vy, sa * vx + ca * vy
+
+
+def render_cyber(gray, p: Params, width_mm, height_mm) -> List[np.ndarray]:
+    """Cybersigilism — barbed tendrils that flow along the form.
+
+    Organic-technology by construction: tendrils grow along the structure-tensor
+    tangent field (so they wrap the subject like veins/circuit-traces, not random
+    scribble), curling harder toward a needle tip, and sprout swept-back barbs at
+    intervals — the thorn/barbed-wire signature. Tone stays pure geometry: seed
+    density and tendril length track darkness; spikes are tapered *outlines*
+    (``--cyber-spike sliver``) or single flick-out V strokes (``stroke``), never a
+    heavier line. ``--cyber-symmetry mirror`` reflects the left half for the
+    centered-sigil composition.
+    """
+    tx, ty = _flow_tangent_field(gray, p.cyber_smooth)
+
+    rng = np.random.default_rng(0)                      # deterministic per params
+    pitch = max(1e-3, p.cyber_spacing)
+    nx = max(1, int(round(width_mm / pitch)))
+    ny = max(1, int(round(height_mm / pitch)))
+    gx_c = (np.arange(nx) + 0.5) * (width_mm / nx)
+    gy_c = (np.arange(ny) + 0.5) * (height_mm / ny)
+    mx, my = np.meshgrid(gx_c, gy_c)
+    sx = np.clip(mx.ravel() + (rng.random(nx * ny) - 0.5) * pitch, 0.0, width_mm)
+    sy = np.clip(my.ravel() + (rng.random(nx * ny) - 0.5) * pitch, 0.0, height_mm)
+
+    mirror = p.cyber_symmetry == "mirror"
+    if mirror:                                          # grow only the left half
+        keep_side = sx <= width_mm / 2.0 + pitch
+        sx, sy = sx[keep_side], sy[keep_side]
+
+    # Keep seeds by local darkness -> tonal density (same lever as flow/tsp).
+    bright_seed = sample_points(gray, sx, sy, width_mm, height_mm)
+    gamma = max(1e-6, p.cyber_gamma)
+    dark_seed = np.clip(1.0 - bright_seed, 0.0, 1.0)
+    keep = rng.random(len(sx)) < dark_seed ** gamma
+    if p.mask_threshold is not None:
+        keep &= bright_seed <= p.mask_threshold
+    sx, sy, dark_seed = sx[keep], sy[keep], dark_seed[keep]
+    if len(sx) == 0:
+        return []
+
+    # Per-seed tendril length: longer in shadow (tone -> reach), plus per-seed
+    # curl sign so neighbouring tendrils hook different ways (organic, not combed).
+    step = max(1e-3, p.cyber_step)
+    n = len(sx)
+    length_i = p.cyber_len * (0.45 + 0.55 * dark_seed)
+    budget = np.maximum(2, np.round(length_i / step).astype(int))
+    maxsteps = int(budget.max())
+    curl_step = np.radians(p.cyber_curl) * rng.choice([-1.0, 1.0], size=n)
+    sense0 = rng.choice([-1.0, 1.0], size=n)            # initial growth sense
+
+    # Vectorized single-direction growth: every tendril marches together.
+    X, Y = sx.copy(), sy.copy()
+    pdx = pdy = None
+    traj = [np.column_stack([X, Y])]
+    end_i = budget.copy()                               # step index each tendril stops
+    stopped = np.zeros(n, dtype=bool)
+    for k in range(maxsteps):
+        vx = sample_points(tx, X, Y, width_mm, height_mm)
+        vy = sample_points(ty, X, Y, width_mm, height_mm)
+        if pdx is None:
+            vx, vy = vx * sense0, vy * sense0
+        else:
+            flip = (vx * pdx + vy * pdy) < 0.0          # eigenvector sign is ambiguous
+            vx = np.where(flip, -vx, vx)
+            vy = np.where(flip, -vy, vy)
+        norm = np.hypot(vx, vy) + 1e-12
+        vx, vy = vx / norm, vy / norm
+        vx, vy = _rot(vx, vy, curl_step * (k / maxsteps))   # hook grows toward the tip
+        move = (k < budget) & ~stopped
+        nX = np.clip(X + vx * step, 0.0, width_mm)
+        nY = np.clip(Y + vy * step, 0.0, height_mm)
+        hit = (nX <= 0.0) | (nX >= width_mm) | (nY <= 0.0) | (nY >= height_mm)
+        newly = move & hit & ~stopped
+        end_i = np.where(newly, k + 1, end_i)
+        stopped |= newly
+        X = np.where(move, nX, X)
+        Y = np.where(move, nY, Y)
+        pdx, pdy = vx, vy
+        traj.append(np.column_stack([X, Y]))
+    traj = np.stack(traj, axis=1)                       # (n, maxsteps+1, 2)
+
+    barb_ang = np.radians(180.0 - p.cyber_barb_angle)   # swept back off the axis
+    node_r = 0.45 * p.cyber_width
+    _CIRC = np.linspace(0.0, 2.0 * np.pi, 13)
+    polylines: List[np.ndarray] = []
+
+    def emit_spike(center, w_root):
+        """Append one spike (tapered sliver, or a single flick-out V stroke)."""
+        if p.cyber_spike == "stroke":
+            if len(center) >= 2:                        # centerline only
+                polylines.append(rdp(center, p.decimate))
+            return
+        out = _taper_sliver(center, w_root, p.cyber_taper)
+        if out is not None:
+            polylines.append(rdp(out, p.decimate))
+
+    def emit_barb(attach, gx, gy, w_root, length):
+        """A short swept-back thorn rooted at `attach`, growing off the axis."""
+        if length <= 1e-4:
+            return
+        for side in (+1.0, -1.0):
+            bx, by = _rot(gx, gy, barb_ang * side)
+            tip = attach + np.array([bx, by]) * length
+            if p.cyber_spike == "stroke":               # thin flick-out V to a point
+                perp = np.array([-gy, gx]) * (0.12 * w_root + 1e-3)
+                polylines.append(np.array([attach + perp * side, tip]))
+            else:
+                emit_spike(np.array([attach, tip]), w_root)
+
+    for m in range(n):
+        e = int(end_i[m])
+        c = traj[m, :e + 1]
+        if len(c) < 2:
+            continue
+        emit_spike(c, p.cyber_width)                    # the tendril itself
+
+        if p.cyber_nodes:
+            root = c[0]
+            polylines.append(np.column_stack([root[0] + node_r * np.cos(_CIRC),
+                                              root[1] + node_r * np.sin(_CIRC)]))
+
+        if p.cyber_barb_spacing > 1e-3 and p.cyber_barb_len > 1e-4:
+            # Arc-length march along the tendril, dropping a barb pair each interval.
+            seg = np.diff(c, axis=0)
+            seglen = np.hypot(seg[:, 0], seg[:, 1])
+            cum = np.concatenate([[0.0], np.cumsum(seglen)])
+            total = cum[-1]
+            s = p.cyber_barb_spacing
+            while s < total - 1e-6:
+                j = int(np.searchsorted(cum, s) - 1)
+                j = max(0, min(j, len(seg) - 1))
+                attach = c[j]
+                gx, gy = seg[j]
+                gnorm = np.hypot(gx, gy) + 1e-12
+                gx, gy = gx / gnorm, gy / gnorm
+                t = s / total                           # 0 root .. 1 tip
+                w_here = p.cyber_width * (1.0 - t) ** max(1e-6, p.cyber_taper)
+                emit_barb(attach, gx, gy, max(w_here, 0.15 * p.cyber_width),
+                          p.cyber_barb_len * (1.0 - 0.7 * t))
+                s += p.cyber_barb_spacing
+
+    if mirror:                                          # reflect the left half across center
+        for pl in list(polylines):
+            m = pl.copy()
+            m[:, 0] = width_mm - m[:, 0]
+            polylines.append(m)
+
+    return polylines
+
+
 _MODES = {
     "wavy": render_wavy,
     "spacing": render_spacing,
@@ -846,6 +1047,7 @@ _MODES = {
     "filet": render_filet,
     "flow": render_flow,
     "tsp": render_tsp,
+    "cyber": render_cyber,
 }
 
 
@@ -1032,6 +1234,37 @@ def build_parser() -> argparse.ArgumentParser:
                    help="darkness weighting for dot density; <1 lifts midtones")
     t.add_argument("--tsp-improve", type=int, default=d.tsp_improve,
                    help="interleaved 2-opt + or-opt refinement passes (0 = raw Hilbert seed)")
+
+    cy = ap.add_argument_group("cyber")
+    cy.add_argument("--cyber-smooth", type=float, default=d.cyber_smooth,
+                    help="structure-tensor blur sigma in px (tendril-field coherence)")
+    cy.add_argument("--cyber-spacing", type=float, default=d.cyber_spacing,
+                    help="mm between tendril seeds (grid pitch)")
+    cy.add_argument("--cyber-len", type=float, default=d.cyber_len,
+                    help="mm base tendril arc length (scaled up in shadow)")
+    cy.add_argument("--cyber-step", type=float, default=d.cyber_step,
+                    help="mm integration step along a tendril")
+    cy.add_argument("--cyber-gamma", type=float, default=d.cyber_gamma,
+                    help="seed-density response curve; <1 lifts midtones")
+    cy.add_argument("--cyber-curl", type=float, default=d.cyber_curl,
+                    help="deg/step hook; tendrils curl harder toward the tip")
+    cy.add_argument("--cyber-width", type=float, default=d.cyber_width,
+                    help="mm root width of a tendril sliver (geometry, not stroke width)")
+    cy.add_argument("--cyber-taper", type=float, default=d.cyber_taper,
+                    help="tendril width falloff exponent (higher = whippier tip)")
+    cy.add_argument("--cyber-barb-spacing", type=float, default=d.cyber_barb_spacing,
+                    help="mm between barbs along a tendril (0 = no barbs)")
+    cy.add_argument("--cyber-barb-len", type=float, default=d.cyber_barb_len,
+                    help="mm barb length at the root (shrinks toward the tip)")
+    cy.add_argument("--cyber-barb-angle", type=float, default=d.cyber_barb_angle,
+                    help="deg barb sweep-back off the tendril axis")
+    cy.add_argument("--cyber-spike", choices=["sliver", "stroke"], default=d.cyber_spike,
+                    help="spike geometry: 'sliver' (tapered outline) | 'stroke' (single V)")
+    cy.add_argument("--cyber-symmetry", choices=["none", "mirror"], default=d.cyber_symmetry,
+                    help="composition: 'none' | 'mirror' (reflect left half across center)")
+    cy.add_argument("--cyber-nodes", action=argparse.BooleanOptionalAction,
+                    default=d.cyber_nodes,
+                    help="draw a small circle node at each tendril root")
     return ap
 
 

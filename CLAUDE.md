@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`laser-toolz` converts raster images into laser-ready hairline SVG line art for the Epilog laser cutter. One CLI (`linify.py`) with six interchangeable render modes, plus an optional Flask web UI (`server.py`) that reuses the CLI's rendering core unchanged.
+`laser-toolz` converts raster images into laser-ready hairline SVG line art for the Epilog laser cutter. One CLI (`linify.py`) with seven interchangeable render modes, plus an optional Flask web UI (`server.py`) that reuses the CLI's rendering core unchanged.
 
 ## The non-negotiable constraint
 
@@ -48,7 +48,7 @@ Shared geometry helpers used across modes: [`rdp`](linify.py#L188) (Ramer-Dougla
 
 **[server.py](server.py)** is a thin single-user Flask wrapper — no persistence. Uploaded images live in in-memory dicts keyed by a token (`_IMAGES` / `_NAMES`, capped at 24 entries). `/upload` decodes and stores, `/render` (POST JSON) returns SVG + stats for live preview, `/download` (GET) returns the same SVG as a named file attachment. Params are reconstructed from JSON via [`_params_from_json`](server.py#L56), which relies on explicit type-map sets (`_BOOL_FIELDS` / `_INT_FIELDS` / `_STR_FIELDS`, rest float) because `amp`/`mask_threshold` default to `None` and PEP 563 makes dataclass `.type` a string. When you add a `Params` field of a non-float type, add it to the matching set. The entire HTML/JS front-end is the inline `_PAGE` string at the bottom of the file.
 
-## The six modes (geometry, not thickness)
+## The seven modes (geometry, not thickness)
 
 - **wavy** — displaced horizontal scanlines; darkness modulates wiggle amplitude (clamped `< spacing/2` so lines never cross). `--amp-gamma` and `--phase-jitter` are the pure-geometry contrast knobs.
 - **spacing** — horizontal lines that pack denser in dark regions. `clean` style = clipped silhouette; `density` style = per-column accumulator for internal shading (dottier).
@@ -56,5 +56,6 @@ Shared geometry helpers used across modes: [`rdp`](linify.py#L188) (Ramer-Dougla
 - **filet** — filet-crochet grid of filled vs. open cells.
 - **flow** — edge-tangent streamline hatching following a structure-tensor field.
 - **tsp** — a single continuous line: weighted stipple points joined into one path by a Hilbert-curve seed, then refined with interleaved 2-opt + or-opt passes (`--tsp-improve`). The Hilbert seed avoids the long "jump-back" edges a nearest-neighbor tour leaves; or-opt relocates strays that 2-opt alone can't fix.
+- **cyber** — cybersigilism: barbed tendrils that grow along the same structure-tensor tangent field as `flow` (so they wrap the form like veins/circuit-traces), curling harder toward a needle tip and sprouting swept-back thorns at intervals. Tone = seed density + tendril length (never thickness). The needle taper is a *shape*, not a stroke: `--cyber-spike sliver` renders each spike as a closed outline that converges to a point; `stroke` is a lighter single flick-out V. `--cyber-symmetry mirror` reflects the left half for a bilateral sigil composition; `--cyber-nodes` adds circuit-node circles at tendril roots. Reuses `flow`'s `_flow_tangent_field`.
 
 See [README.md](README.md) for the full per-mode parameter reference and the parameter cheat-sheet table.
