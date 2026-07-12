@@ -5,7 +5,7 @@ Tools to generate and manipulate SVGs for the Epilog laser cutter.
 ## linify — image → laser-ready SVG line art
 
 Convert any raster image into **continuous hairline SVG lines** for laser
-cutting / perforation. Three interchangeable render modes, one parametric CLI,
+cutting / perforation. Six interchangeable render modes, one parametric CLI,
 plus an optional local web UI for live experimentation.
 
 Everything is built around one non-negotiable rule: **the laser ignores stroke
@@ -30,7 +30,7 @@ contours — never by line thickness or color.
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install pillow numpy scikit-image   # scikit-image is only needed for contour mode
+pip install pillow numpy scikit-image   # scikit-image (+ its scipy) needed for contour, flow, tsp
 pip install flask                        # only for the optional web UI
 ```
 
@@ -40,7 +40,7 @@ pip install flask                        # only for the optional web UI
 python linify.py sample.png -o out.svg --mode wavy      # zero tuning needed
 ```
 
-## The four modes
+## The six modes
 
 ### 1. `wavy` — displaced scanlines (the "face-in-lines" look)
 
@@ -140,6 +140,58 @@ python linify.py sample.png -o filet.svg --mode filet \
     --cells-wide 48 --fill-style hatch --hatch-lines 4 --no-mesh --mask-threshold 0.85
 ```
 
+### 5. `flow` — edge-tangent hatching
+
+Short **streamlines that flow *along* the form** — around the eyes, down the
+jaw, following folds — the way an illustrator lays down contour hatching. The
+direction field comes from the *smoothed structure tensor* (not the raw
+gradient), so it stays coherent even across noisy flat regions. **Tone is stroke
+density**: each seed on a jittered grid survives with probability
+`darkness**flow-gamma`, so strokes crowd into shadows and thin out in
+highlights. Never stroke width — pure geometry.
+
+```bash
+python linify.py sample.png -o flow.svg --mode flow \
+    --flow-spacing 1.4 --flow-len 7 --flow-smooth 6
+
+# denser, longer, more coherent strokes; lift midtones for fuller coverage
+python linify.py sample.png -o flow.svg --mode flow \
+    --flow-spacing 1.0 --flow-len 12 --flow-smooth 10 --flow-gamma 0.6
+```
+
+- **`--flow-smooth`** is the coherence knob: higher averages the flow direction
+  over a wider area (smoother, calmer lines), lower follows fine detail and noise.
+- **`--flow-spacing`** sets seed pitch (hatching density); **`--flow-len`** sets
+  how long each stroke runs before it stops — short reads as a woven stipple,
+  long as flowing ink.
+
+### 6. `tsp` — single continuous line
+
+The **whole image in one unbroken stroke**. The picture is first *stippled* into
+dots whose density tracks darkness (`--points` of them, weighted by
+`--point-gamma`), then every dot is joined into a single path by a
+nearest-neighbor **traveling-salesman tour**, cleaned up with neighbor-limited
+2-opt (`--tsp-improve` passes) to pull out long crossings. The output is exactly
+**one `<path>`** — ideal for a single continuous cut/engrave with no pen-up.
+
+```bash
+python linify.py sample.png -o tsp.svg --mode tsp \
+    --points 4000 --tsp-improve 2
+
+# denser line, isolated subject, midtones lifted for fuller shading
+python linify.py sample.png -o tsp.svg --mode tsp \
+    --points 8000 --point-gamma 0.7 --tsp-improve 3 --mask-threshold 0.9
+```
+
+- **`--points`** trades detail for compute: more dots = a longer, denser line
+  and a slower tour.
+- **`--tsp-improve`** `0` is a raw nearest-neighbor tour (fast, more crossings);
+  `2–3` uncrosses it into a cleaner line at some CPU cost.
+
+Stippling is darkness-weighted rejection sampling (dot density is tone-accurate
+but not blue-noise), and the tour is a heuristic, not an optimal TSP solution —
+both are chosen so a few-thousand-dot portrait renders in well under a second.
+
 ## Background masking
 
 `--mask-threshold T` skips drawing anywhere the (effective) brightness is above
@@ -155,7 +207,7 @@ python linify.py horse.png -o horse.svg --mode wavy --mask-threshold 0.92
 
 | Flag | Default | Applies to | What it does |
 |------|---------|-----------|--------------|
-| `--mode` | `wavy` | all | `wavy` \| `spacing` \| `contour` \| `filet` |
+| `--mode` | `wavy` | all | `wavy` \| `spacing` \| `contour` \| `filet` \| `flow` \| `tsp` |
 | `-o, --output` | stdout | all | output SVG path |
 | `--width-mm` | `200` | all | physical output width in mm (height from aspect) |
 | `--units` | `mm` | all | header unit: `mm` \| `cm` \| `in` (`--width-mm` stays mm) |
@@ -163,8 +215,8 @@ python linify.py horse.png -o horse.svg --mode wavy --mask-threshold 0.92
 | `--color` | `black` | all | single stroke color (`red` = cut layer) |
 | `--invert` | off | all | flip dark↔light tonal encoding |
 | `--mask-threshold` | none | all | skip where brightness > T (erase background) |
-| `--samples` | `800` | all | point density sampled along each line |
-| `--decimate` | `0.03` | all | collinear-point removal tolerance (mm) — smaller = more points |
+| `--samples` | `800` | wavy, spacing | point density sampled along each line |
+| `--decimate` | `0.03` | all but filet | collinear-point removal tolerance (mm) — smaller = more points |
 | `--resample` | `900` | all | working image resolution, longest edge (px) |
 | `--line-spacing` | `2` | wavy | mm between scanline baselines (sets line count) |
 | `--amp` | spacing/2 | wavy | max wiggle amplitude mm (auto-clamped < spacing/2) |
@@ -184,6 +236,14 @@ python linify.py horse.png -o horse.svg --mode wavy --mask-threshold 0.92
 | `--fill-style` | `x` | filet | filled-cell mark: `x` \| `cross` \| `hatch` |
 | `--hatch-lines` | `3` | filet | parallel diagonals per cell for `--fill-style hatch` |
 | `--mesh` / `--no-mesh` | on | filet | draw the full grid lattice (off = filled cells only) |
+| `--flow-smooth` | `6.0` | flow | structure-tensor blur sigma (px) — field coherence |
+| `--flow-spacing` | `1.4` | flow | mm between seed points (hatching density) |
+| `--flow-len` | `7.0` | flow | mm arc length of each streamline stroke |
+| `--flow-step` | `0.4` | flow | mm integration step along a streamline |
+| `--flow-gamma` | `1.0` | flow | seed-density response curve; `<1` lifts midtones |
+| `--points` | `4000` | tsp | target stipple dot count (tour vertices) |
+| `--point-gamma` | `1.0` | tsp | darkness weighting for dot density; `<1` lifts midtones |
+| `--tsp-improve` | `2` | tsp | neighbor-limited 2-opt passes (`0` = nearest-neighbor only) |
 
 ## Verifying the output
 

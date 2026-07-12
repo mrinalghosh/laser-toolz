@@ -12,11 +12,13 @@ Design rules (these exist because the output drives a laser, not a pen plotter):
   * Coordinate space is millimetres. The SVG carries width/height in mm plus a
     matching viewBox so it imports at true scale in LightBurn / Illustrator.
 
-Four interchangeable render modes (``--mode``):
+Six interchangeable render modes (``--mode``):
   wavy     displaced scanlines — darkness modulates the wiggle amplitude.
   spacing  density lines — lines pack together in dark regions.
   contour  topographic iso-brightness lines via skimage.measure.find_contours.
   filet    crochet grid — dark cells become filled squares on an open mesh.
+  flow     edge-tangent hatching — short streamlines flow along the form.
+  tsp      single continuous line — one traveling-salesman tour through a stipple.
 
 Usage:
   python linify.py INPUT.png -o OUT.svg --mode wavy [params...]
@@ -88,6 +90,18 @@ class Params:
     hatch_lines: int = 3             # parallel diagonals per cell when fill_style='hatch'
     mesh: bool = True                # draw the full grid lattice under the cells
 
+    # --- flow (edge-tangent hatching) ---
+    flow_smooth: float = 6.0         # structure-tensor blur sigma (px) — field coherence
+    flow_spacing: float = 1.4        # mm between seed points (grid pitch)
+    flow_len: float = 7.0            # mm arc length of each streamline stroke
+    flow_step: float = 0.4           # mm integration step along a streamline
+    flow_gamma: float = 1.0          # seed-density response curve (<1 lifts midtones)
+
+    # --- tsp (single continuous line) ---
+    points: int = 4000               # target stipple dot count (tour vertices)
+    point_gamma: float = 1.0         # darkness weighting for dot density (<1 lifts midtones)
+    tsp_improve: int = 2             # neighbor-limited 2-opt passes (0 = nearest-neighbor only)
+
 
 # --------------------------------------------------------------------------- #
 # Image loading / sampling
@@ -141,6 +155,30 @@ def sample_grid(gray, xs_mm, ys_mm, width_mm, height_mm):
 
     top = g00 * (1 - wx) + g01 * wx
     bot = g10 * (1 - wx) + g11 * wx
+    return top * (1 - wy) + bot * wy
+
+
+def sample_points(field, xs_mm, ys_mm, width_mm, height_mm):
+    """Bilinearly sample `field` at *scattered* points (xs_mm[i], ys_mm[i]).
+
+    Unlike `sample_grid` (outer product), this pairs xs and ys elementwise —
+    what streamline tracing and stipple sampling need. Returns a 1-D array.
+    """
+    h, w = field.shape
+    fx = np.clip(np.asarray(xs_mm, dtype=np.float64) / width_mm * (w - 1), 0, w - 1)
+    fy = np.clip(np.asarray(ys_mm, dtype=np.float64) / height_mm * (h - 1), 0, h - 1)
+    x0 = np.floor(fx).astype(int)
+    x1 = np.minimum(x0 + 1, w - 1)
+    y0 = np.floor(fy).astype(int)
+    y1 = np.minimum(y0 + 1, h - 1)
+    wx = fx - x0
+    wy = fy - y0
+    f00 = field[y0, x0]
+    f01 = field[y0, x1]
+    f10 = field[y1, x0]
+    f11 = field[y1, x1]
+    top = f00 * (1 - wx) + f01 * wx
+    bot = f10 * (1 - wx) + f11 * wx
     return top * (1 - wy) + bot * wy
 
 
@@ -463,11 +501,244 @@ def render_filet(gray, p: Params, width_mm, height_mm) -> List[np.ndarray]:
     return polylines
 
 
+# --------------------------------------------------------------------------- #
+# Mode: flow — edge-tangent flow-field hatching
+# --------------------------------------------------------------------------- #
+def _flow_tangent_field(gray, sigma):
+    """Unit tangent field (tx, ty) that flows ALONG edges (isophotes).
+
+    Built from the *smoothed structure tensor*. The eigenvector of its smaller
+    eigenvalue points where intensity changes least — i.e. along the edge — so
+    the field wraps the form and stays coherent even where the raw gradient is
+    pure noise (flat regions). This is what makes the strokes read as an
+    illustrator's contour hatching rather than random scribble.
+    """
+    from skimage.filters import gaussian  # optional dep, shared with contour mode
+
+    g = gaussian(gray, sigma=max(0.5, sigma * 0.5))     # denoise before deriving
+    gy, gx = np.gradient(g)                             # row = y, col = x
+    # Structure-tensor components, each smoothed to average orientations locally.
+    sxx = gaussian(gx * gx, sigma=sigma)
+    syy = gaussian(gy * gy, sigma=sigma)
+    sxy = gaussian(gx * gy, sigma=sigma)
+    # Dominant gradient orientation; the tangent is perpendicular to it (+90°).
+    theta = 0.5 * np.arctan2(2.0 * sxy, sxx - syy)
+    tx = -np.sin(theta)
+    ty = np.cos(theta)
+    return tx, ty
+
+
+def render_flow(gray, p: Params, width_mm, height_mm) -> List[np.ndarray]:
+    """Flow-field hatching — short streamlines that flow along the form.
+
+    A coherent tangent field (see `_flow_tangent_field`) is seeded on a jittered
+    grid; each seed is kept with probability darkness**flow_gamma, so strokes
+    crowd into shadows and thin out in highlights. Tone is therefore encoded as
+    *stroke density* (geometry), never stroke width. Each kept seed grows a
+    streamline of arc length `flow_len` by integrating the field both ways from
+    the seed, so the seed sits at the stroke's midpoint.
+    """
+    tx, ty = _flow_tangent_field(gray, p.flow_smooth)
+
+    # Jittered grid of seeds at `flow_spacing` pitch (jitter breaks grid moire).
+    rng = np.random.default_rng(0)                      # deterministic per params
+    pitch = max(1e-3, p.flow_spacing)
+    nx = max(1, int(round(width_mm / pitch)))
+    ny = max(1, int(round(height_mm / pitch)))
+    gx_c = (np.arange(nx) + 0.5) * (width_mm / nx)
+    gy_c = (np.arange(ny) + 0.5) * (height_mm / ny)
+    sx, sy = np.meshgrid(gx_c, gy_c)
+    sx = sx.ravel() + (rng.random(nx * ny) - 0.5) * pitch
+    sy = sy.ravel() + (rng.random(nx * ny) - 0.5) * pitch
+    sx = np.clip(sx, 0.0, width_mm)
+    sy = np.clip(sy, 0.0, height_mm)
+
+    # Keep seeds probabilistically by local darkness -> tonal density.
+    bright_seed = sample_points(gray, sx, sy, width_mm, height_mm)
+    gamma = max(1e-6, p.flow_gamma)
+    dark_seed = np.clip(1.0 - bright_seed, 0.0, 1.0) ** gamma
+    keep = rng.random(len(sx)) < dark_seed
+    if p.mask_threshold is not None:
+        keep &= bright_seed <= p.mask_threshold
+    sx, sy = sx[keep], sy[keep]
+    if len(sx) == 0:
+        return []
+
+    # Vectorized streamline integration: every stroke advances together.
+    step = max(1e-3, p.flow_step)
+    half = max(1, int(round((p.flow_len * 0.5) / step)))
+
+    def integrate(direction):
+        """March `half` steps from every seed; return list of (M,2) positions."""
+        X, Y = sx.copy(), sy.copy()
+        pdx, pdy = None, None
+        out = []
+        for _ in range(half):
+            vx = sample_points(tx, X, Y, width_mm, height_mm)
+            vy = sample_points(ty, X, Y, width_mm, height_mm)
+            if pdx is None:
+                vx, vy = vx * direction, vy * direction   # pick initial sense
+            else:
+                # Eigenvector sign is ambiguous; align with the previous step
+                # so the streamline never doubles back on itself.
+                flip = (vx * pdx + vy * pdy) < 0.0
+                vx = np.where(flip, -vx, vx)
+                vy = np.where(flip, -vy, vy)
+            norm = np.hypot(vx, vy) + 1e-12
+            vx, vy = vx / norm, vy / norm
+            X = np.clip(X + vx * step, 0.0, width_mm)
+            Y = np.clip(Y + vy * step, 0.0, height_mm)
+            pdx, pdy = vx, vy
+            out.append(np.column_stack([X, Y]))
+        return out
+
+    fwd = integrate(+1.0)                               # seed -> forward
+    back = integrate(-1.0)                              # seed -> backward
+    seed_col = np.column_stack([sx, sy])
+    # Stitch: reversed backward half + seed + forward half, per streamline.
+    stack = back[::-1] + [seed_col] + fwd               # list of (M,2), length 2*half+1
+    traj = np.stack(stack, axis=1)                      # (M, 2*half+1, 2)
+
+    polylines = []
+    for m in range(traj.shape[0]):
+        pts = traj[m]
+        if p.mask_threshold is not None:
+            b = sample_points(gray, pts[:, 0], pts[:, 1], width_mm, height_mm)
+            for run in split_runs(pts, b <= p.mask_threshold):
+                polylines.append(rdp(run, p.decimate))
+        else:
+            polylines.append(rdp(pts, p.decimate))
+    return polylines
+
+
+# --------------------------------------------------------------------------- #
+# Mode: tsp — single continuous line (stipple + traveling-salesman tour)
+# --------------------------------------------------------------------------- #
+def _nn_tour(P, tree):
+    """Greedy nearest-neighbor tour over points P (KD-tree `tree`)."""
+    n = len(P)
+    visited = np.zeros(n, dtype=bool)
+    order = np.empty(n, dtype=int)
+    cur = 0
+    visited[0] = True
+    order[0] = 0
+    for i in range(1, n):
+        k = 4
+        nxt = -1
+        while True:
+            k = min(n, k * 2)
+            _, idxs = tree.query(P[cur], k=k)
+            for j in np.atleast_1d(idxs):
+                if not visited[j]:
+                    nxt = int(j)
+                    break
+            if nxt != -1 or k >= n:
+                break
+        if nxt == -1:                                   # all k neighbors seen
+            nxt = int(np.where(~visited)[0][0])
+        visited[nxt] = True
+        order[i] = nxt
+        cur = nxt
+    return order
+
+
+def _two_opt(P, order, tree, passes, k=8):
+    """Neighbor-limited 2-opt: uncross the tour using each node's k neighbors.
+
+    Full 2-opt is O(n^2) per pass; restricting reconnection candidates to the
+    k nearest neighbors makes it ~O(n*k) and removes the ugly long crossings a
+    pure nearest-neighbor tour leaves behind.
+    """
+    n = len(P)
+    if passes <= 0 or n < 4:
+        return order
+    _, nbrs = tree.query(P, k=min(k + 1, n))
+    nbrs = np.atleast_2d(nbrs)
+    for _ in range(passes):
+        pos = np.empty(n, dtype=int)
+        pos[order] = np.arange(n)
+        improved = False
+        for a in range(n - 1):
+            i, i_next = order[a], order[a + 1]
+            pi, pin = P[i], P[i_next]
+            d_cur = np.hypot(*(pi - pin))
+            for j in nbrs[i][1:]:
+                b = pos[j]
+                if b <= a + 1 or b >= n - 1:
+                    continue
+                jn = order[b + 1]
+                # Reverse segment a+1..b: edges (i,i_next)+(j,jn) -> (i,j)+(i_next,jn)
+                d_old = d_cur + np.hypot(*(P[j] - P[jn]))
+                d_new = np.hypot(*(pi - P[j])) + np.hypot(*(pin - P[jn]))
+                if d_new + 1e-9 < d_old:
+                    order[a + 1:b + 1] = order[a + 1:b + 1][::-1]
+                    pos[order] = np.arange(n)
+                    improved = True
+                    i_next = order[a + 1]
+                    pin = P[i_next]
+                    d_cur = np.hypot(*(pi - pin))
+        if not improved:
+            break
+    return order
+
+
+def render_tsp(gray, p: Params, width_mm, height_mm) -> List[np.ndarray]:
+    """Whole image as ONE continuous line — the single-stroke portrait.
+
+    Two stages, both pure geometry:
+      1. Stipple: reject-sample points with acceptance = darkness**point_gamma,
+         so dot density tracks tone (dense in shadow, sparse in light).
+      2. Tour: order every dot into one path with a nearest-neighbor tour,
+         then uncross it with neighbor-limited 2-opt. The result is a single
+         unbroken polyline — one cut path for the whole image.
+    """
+    try:
+        from scipy.spatial import cKDTree
+    except ImportError as exc:                          # pragma: no cover
+        raise RuntimeError("tsp mode needs scipy (installed with scikit-image); "
+                           "pip install scipy") from exc
+
+    rng = np.random.default_rng(0)                      # deterministic per params
+    target = max(2, int(p.points))
+    gamma = max(1e-6, p.point_gamma)
+
+    # Reject-sample in batches until we have `target` accepted dots (or give up).
+    collected = []
+    have = 0
+    attempts = 0
+    batch = max(1000, target * 4)
+    max_attempts = target * 80
+    while have < target and attempts < max_attempts:
+        cx = rng.random(batch) * width_mm
+        cy = rng.random(batch) * height_mm
+        b = sample_points(gray, cx, cy, width_mm, height_mm)
+        acc = rng.random(batch) < np.clip(1.0 - b, 0.0, 1.0) ** gamma
+        if p.mask_threshold is not None:
+            acc &= b <= p.mask_threshold
+        if acc.any():
+            collected.append(np.column_stack([cx[acc], cy[acc]]))
+            have += int(acc.sum())
+        attempts += batch
+
+    if not collected:
+        return []
+    P = np.vstack(collected)[:target]
+    if len(P) < 2:
+        return []
+
+    tree = cKDTree(P)
+    order = _nn_tour(P, tree)
+    order = _two_opt(P, order, tree, int(p.tsp_improve))
+    return [rdp(P[order], p.decimate)]
+
+
 _MODES = {
     "wavy": render_wavy,
     "spacing": render_spacing,
     "contour": render_contour,
     "filet": render_filet,
+    "flow": render_flow,
+    "tsp": render_tsp,
 }
 
 
@@ -619,6 +890,26 @@ def build_parser() -> argparse.ArgumentParser:
                    help="parallel diagonals per cell for --fill-style hatch")
     f.add_argument("--mesh", action=argparse.BooleanOptionalAction, default=d.mesh,
                    help="draw the full grid lattice (--no-mesh: filled cells only)")
+
+    fl = ap.add_argument_group("flow")
+    fl.add_argument("--flow-smooth", type=float, default=d.flow_smooth,
+                    help="structure-tensor blur sigma in px (field coherence)")
+    fl.add_argument("--flow-spacing", type=float, default=d.flow_spacing,
+                    help="mm between seed points (grid pitch)")
+    fl.add_argument("--flow-len", type=float, default=d.flow_len,
+                    help="mm arc length of each streamline stroke")
+    fl.add_argument("--flow-step", type=float, default=d.flow_step,
+                    help="mm integration step along a streamline")
+    fl.add_argument("--flow-gamma", type=float, default=d.flow_gamma,
+                    help="seed-density response curve; <1 lifts midtones")
+
+    t = ap.add_argument_group("tsp")
+    t.add_argument("--points", type=int, default=d.points,
+                   help="target stipple dot count (tour vertices)")
+    t.add_argument("--point-gamma", type=float, default=d.point_gamma,
+                   help="darkness weighting for dot density; <1 lifts midtones")
+    t.add_argument("--tsp-improve", type=int, default=d.tsp_improve,
+                   help="neighbor-limited 2-opt passes (0 = nearest-neighbor only)")
     return ap
 
 

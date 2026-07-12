@@ -40,7 +40,8 @@ _NAMES: dict[str, str] = {}
 # Explicit type map — can't infer from defaults (amp/mask_threshold default to
 # None) and PEP 563 makes dataclass .type a string, so name the coercion here.
 _BOOL_FIELDS = {"invert", "freq_mod", "mesh"}
-_INT_FIELDS = {"samples", "resample", "levels", "cells_wide", "hatch_lines"}
+_INT_FIELDS = {"samples", "resample", "levels", "cells_wide", "hatch_lines",
+               "points", "tsp_improve"}
 _STR_FIELDS = {"mode", "color", "units", "spacing_style", "fill_style"}
 _FLOAT_FIELDS = {f.name for f in fields(Params)} - _BOOL_FIELDS - _INT_FIELDS - _STR_FIELDS
 
@@ -385,6 +386,8 @@ _PAGE = r"""<!doctype html>
         <button data-m="spacing">spacing</button>
         <button data-m="contour">contour</button>
         <button data-m="filet">filet</button>
+        <button data-m="flow">flow</button>
+        <button data-m="tsp">tsp</button>
       </div>
     </div>
 
@@ -473,6 +476,30 @@ _PAGE = r"""<!doctype html>
       <div class="chk"><input type="checkbox" id="mesh" checked><label for="mesh">Draw mesh grid</label><span class="info" data-tip="Draw the full grid lattice (every cell border) as long continuous hairlines — the open filet mesh. Off: only filled cells are drawn, each with its own outline, floating on blank ground.">i</span></div>
     </div>
 
+    <!-- flow -->
+    <div class="grp mode-flow hide"><h3>Flow <span class="info" data-tip="Edge-tangent hatching: short streamlines flow along the form (around eyes, jaw, folds). Stroke density encodes tone — dense in shadow, sparse in light.">i</span></h3>
+      <label class="row"><span class="lbl">Seed spacing (<span class="uu">mm</span>)<span class="info" data-tip="Grid pitch between candidate strokes. Smaller = denser hatching (heavier files); larger = sparser.">i</span></span> <input class="num" type="number" id="n_flow_spacing"></label>
+      <input type="range" id="flow_spacing" min="0.4" max="5" step="0.05" value="1.4">
+      <label class="row"><span class="lbl">Stroke length (<span class="uu">mm</span>)<span class="info" data-tip="Arc length of each streamline. Longer strokes read as flowing lines; shorter as a stipple-like weave.">i</span></span> <input class="num" type="number" id="n_flow_len"></label>
+      <input type="range" id="flow_len" min="1" max="30" step="0.5" value="7">
+      <label class="row"><span class="lbl">Field coherence (sigma px)<span class="info" data-tip="Structure-tensor blur that averages the flow direction. Higher = smoother, more coherent flow; lower = follows fine detail (and noise).">i</span></span> <input class="num" type="number" id="n_flow_smooth"></label>
+      <input type="range" id="flow_smooth" min="1" max="20" step="0.5" value="6">
+      <label class="row"><span class="lbl">Integration step (<span class="uu">mm</span>)<span class="info" data-tip="Distance marched per step along a streamline. Smaller = smoother strokes and more points; larger = coarser, lighter files.">i</span></span> <input class="num" type="number" id="n_flow_step"></label>
+      <input type="range" id="flow_step" min="0.1" max="1.5" step="0.05" value="0.4">
+      <label class="row"><span class="lbl">Density gamma<span class="info" data-tip="Seed-density response curve. Below 1 lifts midtones so mid-gray fills with strokes — more coverage and contrast.">i</span></span> <input class="num" type="number" id="n_flow_gamma"></label>
+      <input type="range" id="flow_gamma" min="0.2" max="2" step="0.05" value="1">
+    </div>
+
+    <!-- tsp -->
+    <div class="grp mode-tsp hide"><h3>TSP <span class="info" data-tip="Single continuous line: the image is stippled into dots (dense in shadow) and every dot is joined into one unbroken traveling-salesman path — the whole picture in a single stroke.">i</span></h3>
+      <label class="row"><span class="lbl">Dot count<span class="info" data-tip="Number of stipple points — vertices in the single tour. More dots = more detail and a longer, denser line (slower to compute).">i</span></span> <input class="num" type="number" id="n_points"></label>
+      <input type="range" id="points" min="500" max="12000" step="100" value="4000">
+      <label class="row"><span class="lbl">Density gamma<span class="info" data-tip="Darkness weighting for dot placement. Below 1 lifts midtones so mid-gray gets more dots — fuller shading.">i</span></span> <input class="num" type="number" id="n_point_gamma"></label>
+      <input type="range" id="point_gamma" min="0.2" max="2" step="0.05" value="1">
+      <label class="row"><span class="lbl">Untangle passes<span class="info" data-tip="Neighbor-limited 2-opt passes that remove long crossings from the tour. 0 = raw nearest-neighbor (fast, more crossings); 2–3 = cleaner line (slower).">i</span></span> <input class="num" type="number" id="n_tsp_improve"></label>
+      <input type="range" id="tsp_improve" min="0" max="5" step="1" value="2">
+    </div>
+
     <hr class="sep">
 
     <!-- advanced (rows tagged mode-* apply to a subset; untagged = all modes) -->
@@ -484,8 +511,8 @@ _PAGE = r"""<!doctype html>
         <input type="range" id="samples" class="mode-wavy mode-spacing" min="100" max="4000" step="10" value="800">
         <label class="row"><span class="lbl">Resample edge (px)<span class="info" data-tip="Working image resolution (longest edge, px). Higher recovers more detail but renders slower.">i</span></span> <input class="num" type="number" id="n_resample"></label>
         <input type="range" id="resample" min="200" max="2000" step="10" value="900">
-        <label class="row mode-wavy mode-spacing mode-contour"><span class="lbl">Decimation (<span class="uu">mm</span>)<span class="info" data-tip="Collinear-point removal tolerance. Smaller keeps more points (heavier files); larger simplifies. Not used by filet (grid is already minimal).">i</span></span> <input class="num" type="number" id="n_decimate"></label>
-        <input type="range" id="decimate" class="mode-wavy mode-spacing mode-contour" min="0" max="0.5" step="0.005" value="0.03">
+        <label class="row mode-wavy mode-spacing mode-contour mode-flow mode-tsp"><span class="lbl">Decimation (<span class="uu">mm</span>)<span class="info" data-tip="Collinear-point removal tolerance. Smaller keeps more points (heavier files); larger simplifies. Not used by filet (grid is already minimal).">i</span></span> <input class="num" type="number" id="n_decimate"></label>
+        <input type="range" id="decimate" class="mode-wavy mode-spacing mode-contour mode-flow mode-tsp" min="0" max="0.5" step="0.005" value="0.03">
         <label class="row"><span class="lbl">Stroke width (<span class="uu">mm</span>)<span class="info" data-tip="Hairline width. Tonally irrelevant — the laser ignores stroke width — it only affects on-screen visibility.">i</span></span> <input class="num" type="number" id="n_stroke_width"></label>
         <input type="range" id="stroke_width" min="0.001" max="0.5" step="0.001" value="0.02">
       </div>
@@ -533,6 +560,8 @@ const MM_FIELDS = {
   line_spacing:{min:0.5,max:8,step:0.05}, amp:{min:0,max:4,step:0.02},
   wavelength:{min:1,max:30,step:0.25}, min_spacing:{min:0.1,max:4,step:0.02},
   max_spacing:{min:0.5,max:12,step:0.05}, min_contour_len:{min:0,max:30,step:0.25},
+  flow_spacing:{min:0.4,max:5,step:0.05}, flow_len:{min:1,max:30,step:0.5},
+  flow_step:{min:0.1,max:1.5,step:0.05},
   decimate:{min:0,max:0.5,step:0.005}, stroke_width:{min:0.001,max:0.5,step:0.001},
 };
 const unitRound = v => +v.toFixed(unit==="mm" ? 3 : 4);
@@ -552,6 +581,8 @@ function scaleField(id, prevUnit){
 const RANGES = ["width","mask_threshold","line_spacing","amp","amp_gamma","phase_jitter",
   "wavelength","freq_amount","min_spacing","max_spacing","levels","smooth","min_contour_len",
   "cells_wide","fill_threshold","hatch_lines",
+  "flow_spacing","flow_len","flow_smooth","flow_step","flow_gamma",
+  "points","point_gamma","tsp_improve",
   "samples","resample","decimate","stroke_width"];
 
 // paint the red fill on a range track (webkit reads --p; Firefox uses -moz-range-progress)
@@ -588,6 +619,9 @@ function collect(){
     levels: g("levels"), smooth: g("smooth"), min_contour_len: gmm("min_contour_len"),
     cells_wide: g("cells_wide"), fill_threshold: g("fill_threshold"),
     fill_style: $("fill_style").value, hatch_lines: g("hatch_lines"), mesh: $("mesh").checked,
+    flow_spacing: gmm("flow_spacing"), flow_len: gmm("flow_len"), flow_step: gmm("flow_step"),
+    flow_smooth: g("flow_smooth"), flow_gamma: g("flow_gamma"),
+    points: g("points"), point_gamma: g("point_gamma"), tsp_improve: g("tsp_improve"),
     samples: g("samples"), resample: g("resample"), decimate: gmm("decimate"),
     stroke_width: gmm("stroke_width"),
   };
@@ -616,7 +650,7 @@ $("modes").addEventListener("click", e=>{
   const b = e.target.closest("button"); if(!b) return;
   mode = b.dataset.m;
   [...$("modes").children].forEach(x=>x.classList.toggle("on", x===b));
-  document.querySelectorAll(".mode-wavy,.mode-spacing,.mode-contour,.mode-filet")
+  document.querySelectorAll(".mode-wavy,.mode-spacing,.mode-contour,.mode-filet,.mode-flow,.mode-tsp")
     .forEach(el=>el.classList.add("hide"));
   document.querySelectorAll(".mode-"+mode).forEach(el=>el.classList.remove("hide"));
   if(mode==="filet") syncFiletHatch();   // sub-controls depend on fill style
