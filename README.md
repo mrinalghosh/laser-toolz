@@ -169,10 +169,12 @@ python linify.py sample.png -o flow.svg --mode flow \
 
 The **whole image in one unbroken stroke**. The picture is first *stippled* into
 dots whose density tracks darkness (`--points` of them, weighted by
-`--point-gamma`), then every dot is joined into a single path by a
-nearest-neighbor **traveling-salesman tour**, cleaned up with neighbor-limited
-2-opt (`--tsp-improve` passes) to pull out long crossings. The output is exactly
-**one `<path>`** — ideal for a single continuous cut/engrave with no pen-up.
+`--point-gamma`), then every dot is joined into a single **traveling-salesman
+path**: seeded along a **Hilbert space-filling curve** (which never makes a long
+jump-back edge), then cleaned up with interleaved neighbor-limited **2-opt +
+or-opt** (`--tsp-improve` passes) — 2-opt uncrosses, or-opt relocates the strays
+2-opt can't reach. The output is exactly **one `<path>`** — ideal for a single
+continuous cut/engrave with no pen-up.
 
 ```bash
 python linify.py sample.png -o tsp.svg --mode tsp \
@@ -185,8 +187,9 @@ python linify.py sample.png -o tsp.svg --mode tsp \
 
 - **`--points`** trades detail for compute: more dots = a longer, denser line
   and a slower tour.
-- **`--tsp-improve`** `0` is a raw nearest-neighbor tour (fast, more crossings);
-  `2–3` uncrosses it into a cleaner line at some CPU cost.
+- **`--tsp-improve`** `0` is the raw Hilbert seed (fast, some gap-crossing
+  edges); `2–4` refines it into a cleaner line — each extra pass shortens the
+  longest jumps at some CPU cost, plateauing once the tour is locally optimal.
 
 Stippling is darkness-weighted rejection sampling (dot density is tone-accurate
 but not blue-noise), and the tour is a heuristic, not an optimal TSP solution —
@@ -243,7 +246,7 @@ python linify.py horse.png -o horse.svg --mode wavy --mask-threshold 0.92
 | `--flow-gamma` | `1.0` | flow | seed-density response curve; `<1` lifts midtones |
 | `--points` | `4000` | tsp | target stipple dot count (tour vertices) |
 | `--point-gamma` | `1.0` | tsp | darkness weighting for dot density; `<1` lifts midtones |
-| `--tsp-improve` | `2` | tsp | neighbor-limited 2-opt passes (`0` = nearest-neighbor only) |
+| `--tsp-improve` | `2` | tsp | interleaved 2-opt + or-opt passes (`0` = raw Hilbert seed) |
 
 ## Verifying the output
 

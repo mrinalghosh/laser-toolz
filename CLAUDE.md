@@ -55,6 +55,6 @@ Shared geometry helpers used across modes: [`rdp`](linify.py#L188) (Ramer-Dougla
 - **contour** — iso-brightness topographic lines via `skimage.measure.find_contours`.
 - **filet** — filet-crochet grid of filled vs. open cells.
 - **flow** — edge-tangent streamline hatching following a structure-tensor field.
-- **tsp** — a single continuous line: weighted stipple points joined by a nearest-neighbor + 2-opt tour.
+- **tsp** — a single continuous line: weighted stipple points joined into one path by a Hilbert-curve seed, then refined with interleaved 2-opt + or-opt passes (`--tsp-improve`). The Hilbert seed avoids the long "jump-back" edges a nearest-neighbor tour leaves; or-opt relocates strays that 2-opt alone can't fix.
 
 See [README.md](README.md) for the full per-mode parameter reference and the parameter cheat-sheet table.

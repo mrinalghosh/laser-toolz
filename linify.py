@@ -106,7 +106,7 @@ class Params:
     # --- tsp (single continuous line) ---
     points: int = 4000               # target stipple dot count (tour vertices)
     point_gamma: float = 1.0         # darkness weighting for dot density (<1 lifts midtones)
-    tsp_improve: int = 2             # neighbor-limited 2-opt passes (0 = nearest-neighbor only)
+    tsp_improve: int = 2             # interleaved 2-opt + or-opt refinement passes (0 = raw Hilbert seed)
 
 
 # --------------------------------------------------------------------------- #
@@ -650,32 +650,31 @@ def render_flow(gray, p: Params, width_mm, height_mm) -> List[np.ndarray]:
 # --------------------------------------------------------------------------- #
 # Mode: tsp — single continuous line (stipple + traveling-salesman tour)
 # --------------------------------------------------------------------------- #
-def _nn_tour(P, tree):
-    """Greedy nearest-neighbor tour over points P (KD-tree `tree`)."""
-    n = len(P)
-    visited = np.zeros(n, dtype=bool)
-    order = np.empty(n, dtype=int)
-    cur = 0
-    visited[0] = True
-    order[0] = 0
-    for i in range(1, n):
-        k = 4
-        nxt = -1
-        while True:
-            k = min(n, k * 2)
-            _, idxs = tree.query(P[cur], k=k)
-            for j in np.atleast_1d(idxs):
-                if not visited[j]:
-                    nxt = int(j)
-                    break
-            if nxt != -1 or k >= n:
-                break
-        if nxt == -1:                                   # all k neighbors seen
-            nxt = int(np.where(~visited)[0][0])
-        visited[nxt] = True
-        order[i] = nxt
-        cur = nxt
-    return order
+def _hilbert_order(P, width_mm, height_mm, bits=16):
+    """Seed the tour by sorting dots along a Hilbert space-filling curve.
+
+    Unlike a greedy nearest-neighbor tour, a Hilbert ordering *never* makes a
+    long jump: points that are close in the plane stay close in the ordering,
+    so the initial path has no strands to reach back for. 2-opt / or-opt then
+    polish the local detail. This is what kills the radiating spikes a pure
+    nearest-neighbor seed leaves behind.
+    """
+    n = 1 << bits                                       # side of the integer grid
+    x = np.clip(P[:, 0] / max(width_mm, 1e-9) * (n - 1), 0, n - 1).astype(np.int64)
+    y = np.clip(P[:, 1] / max(height_mm, 1e-9) * (n - 1), 0, n - 1).astype(np.int64)
+    d = np.zeros(len(P), dtype=np.int64)
+    s = n >> 1
+    while s > 0:                                        # standard xy->d, vectorized
+        rx = ((x & s) > 0).astype(np.int64)
+        ry = ((y & s) > 0).astype(np.int64)
+        d += s * s * ((3 * rx) ^ ry)
+        flip = (ry == 0) & (rx == 1)                    # rotate quadrant when ry==0
+        x = np.where(flip, (n - 1) - x, x)
+        y = np.where(flip, (n - 1) - y, y)
+        swap = ry == 0
+        x, y = np.where(swap, y, x), np.where(swap, x, y)
+        s >>= 1
+    return np.argsort(d, kind="stable")
 
 
 def _two_opt(P, order, tree, passes, k=8):
@@ -718,14 +717,84 @@ def _two_opt(P, order, tree, passes, k=8):
     return order
 
 
+def _or_opt(P, order, tree, passes, k=8, max_seg=3):
+    """Relocate short runs (length 1..max_seg) next to a nearer node.
+
+    Or-opt complements 2-opt: 2-opt can only *reverse* a span, so the "detour
+    out to grab one stray dot, then jump back" edges survive it. Or-opt lifts
+    that short run out and reinserts it beside one of its true neighbors,
+    closing the gap it left behind — exactly the move that removes those jumps.
+    Candidate insertion edges are limited to each run-end's k nearest neighbors
+    to stay ~O(n*k) per pass.
+    """
+    n = len(P)
+    if passes <= 0 or n < 5:
+        return order
+    _, nbrs = tree.query(P, k=min(k + 1, n))
+    nbrs = np.atleast_2d(nbrs)
+
+    def dist(u, v):                                     # -1 = past a path end
+        if u < 0 or v < 0:
+            return 0.0
+        return float(np.hypot(P[u, 0] - P[v, 0], P[u, 1] - P[v, 1]))
+
+    order = list(int(i) for i in order)
+    for _ in range(passes):
+        pos = np.empty(n, dtype=int)
+        pos[order] = np.arange(n)
+        improved = False
+        a = 0
+        while a < n:
+            moved = False
+            for L in range(1, max_seg + 1):
+                if a + L > n:
+                    break
+                s0, s1 = order[a], order[a + L - 1]     # run endpoints
+                prev = order[a - 1] if a > 0 else -1
+                nxt = order[a + L] if a + L < n else -1
+                # gain from splicing the run out and bridging prev<->nxt
+                gain = dist(prev, s0) + dist(s1, nxt) - dist(prev, nxt)
+                if gain <= 1e-9:
+                    continue
+                best_delta, best_c, best_rev = 1e-9, -1, False
+                for node in set(nbrs[s0][1:]).union(nbrs[s1][1:]):
+                    c = int(pos[node])
+                    if a - 1 <= c <= a + L - 1:         # the run's own edges
+                        continue
+                    cn = order[c + 1] if c + 1 < n else -1
+                    base = dist(order[c], cn)
+                    # insert forward (c-s0..s1-cn) or reversed (c-s1..s0-cn)
+                    delta_f = gain + base - dist(order[c], s0) - dist(s1, cn)
+                    delta_r = gain + base - dist(order[c], s1) - dist(s0, cn)
+                    if delta_f > best_delta:
+                        best_delta, best_c, best_rev = delta_f, c, False
+                    if delta_r > best_delta:
+                        best_delta, best_c, best_rev = delta_r, c, True
+                if best_c != -1:
+                    seg = order[a:a + L]
+                    if best_rev:
+                        seg = seg[::-1]
+                    del order[a:a + L]
+                    c = best_c if best_c < a else best_c - L
+                    order[c + 1:c + 1] = seg
+                    pos[order] = np.arange(n)
+                    improved = moved = True
+                    break
+            a += 1
+        if not improved:
+            break
+    return np.asarray(order, dtype=int)
+
+
 def render_tsp(gray, p: Params, width_mm, height_mm) -> List[np.ndarray]:
     """Whole image as ONE continuous line — the single-stroke portrait.
 
     Two stages, both pure geometry:
       1. Stipple: reject-sample points with acceptance = darkness**point_gamma,
          so dot density tracks tone (dense in shadow, sparse in light).
-      2. Tour: order every dot into one path with a nearest-neighbor tour,
-         then uncross it with neighbor-limited 2-opt. The result is a single
+      2. Tour: seed one path by sorting the dots along a Hilbert curve (no
+         long jumps by construction), then refine with interleaved 2-opt
+         (uncross) and or-opt (relocate strays) passes. The result is a single
          unbroken polyline — one cut path for the whole image.
     """
     try:
@@ -763,8 +832,10 @@ def render_tsp(gray, p: Params, width_mm, height_mm) -> List[np.ndarray]:
         return []
 
     tree = cKDTree(P)
-    order = _nn_tour(P, tree)
-    order = _two_opt(P, order, tree, int(p.tsp_improve))
+    order = _hilbert_order(P, width_mm, height_mm)
+    for _ in range(max(0, int(p.tsp_improve))):         # 2-opt & or-opt feed each other
+        order = _two_opt(P, order, tree, 1)
+        order = _or_opt(P, order, tree, 1)
     return [rdp(P[order], p.decimate)]
 
 
@@ -960,7 +1031,7 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--point-gamma", type=float, default=d.point_gamma,
                    help="darkness weighting for dot density; <1 lifts midtones")
     t.add_argument("--tsp-improve", type=int, default=d.tsp_improve,
-                   help="neighbor-limited 2-opt passes (0 = nearest-neighbor only)")
+                   help="interleaved 2-opt + or-opt refinement passes (0 = raw Hilbert seed)")
     return ap
 
 
