@@ -108,6 +108,17 @@ class Params:
     point_gamma: float = 1.0         # darkness weighting for dot density (<1 lifts midtones)
     tsp_improve: int = 2             # interleaved 2-opt + or-opt refinement passes (0 = raw Hilbert seed)
 
+    # --- glyph (ascii / unicode line art) ---
+    glyph_cols: int = 80             # grid columns; rows derived from cell aspect
+    glyph_palette: str = "ascii"     # built-in ramp: ascii | blocks | boxdraw | favorites
+    glyph_chars: str = ""            # explicit character set (overrides --glyph-palette)
+    glyph_font: str = ""             # font file override ('' => built-in macOS font stack)
+    glyph_gamma: float = 1.0         # darkness response curve (<1 lifts midtones)
+    glyph_size: float = 0.92         # glyph size as a fraction of the cell (0..1)
+    glyph_aspect: float = 1.0        # cell height/width ratio (1 = square cells)
+    glyph_edge: float = 0.0          # edge-direction awareness 0..1 (0 = pure density)
+    glyph_edge_threshold: float = 0.12  # min local edge coherence to allow a directional swap
+
 
 # --------------------------------------------------------------------------- #
 # Image loading / sampling
@@ -839,6 +850,303 @@ def render_tsp(gray, p: Params, width_mm, height_mm) -> List[np.ndarray]:
     return [rdp(P[order], p.decimate)]
 
 
+# --------------------------------------------------------------------------- #
+# Mode: glyph — ASCII / Unicode line art (density ramp + edge-aware substitution)
+# --------------------------------------------------------------------------- #
+# The glyphs in a font are ALREADY vector outlines; freetype-py hands us the
+# font's own curves (no tracing) plus a rasterizer we reuse to rank each glyph
+# by ink density and to tag its dominant stroke orientation. Output stays pure
+# geometry: each cell places the chosen glyph's outline as hairline polylines,
+# tone encoded by which glyph (how much contour packs into the cell), never by
+# thickness — same laser rule as every other mode.
+_GLYPH_FONT_STACK = [
+    "/System/Library/Fonts/Apple Symbols.ttf",              # broad symbol coverage
+    "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",  # fallback for the rest
+    "/System/Library/Fonts/Menlo.ttc",                     # crisp ascii ramp
+    "/System/Library/Fonts/Supplemental/STIXGeneral.otf",  # math / technical
+]
+
+# Bundled from a glyph-archive export so `--glyph-palette favorites` works with
+# no import. Missing-in-font entries are dropped automatically at analysis time.
+_GLYPH_FAVORITES = (
+    "⎐⁂⏧⍖↭↬⇶⇲⇱⇝⇜⊬"
+    "⊹⋇⋱⋳⊶⊷⏦⎃⌖⌮⌭⎌"
+    "⎄⌱⚵⚴⚳⚲⛼⛻☇☈☍☨"
+    "⚆⚇⚈⚉⚞⚟⚷⚹⚺⚻⚼⛶"
+    "⛯⛮⛭⛠⛚✢✣✤✥✧✱✲"
+    "✶✷✸✹✺✻✼✽✿❀❁❅"
+    "❈❉➟⯨⯩⯰⯲⯳⯴⯵⯶⯸"
+    "⯻⯿⯢⯣⯤⯦⯧⯚⯙⯘⯖⯒"
+    "⯐⯉⭞⭟⭜⭝⭗⭄⭃⬲⬳⬵"
+    "⬴⬹⬺⬾\U0001f71f\U0001f71d\U0001f71a\U0001f725\U0001f726"
+    "\U0001f727\U0001f72b\U0001f72c\U0001f72d\U0001f72f\U0001f732\U0001f733"
+    "\U0001f737\U0001f738\U0001f73a\U0001f73c\U0001f73d\U0001f73f\U0001f740"
+    "\U0001f744\U0001f745\U0001f746\U0001f74a\U0001f74b\U0001f74f\U0001f751"
+    "\U0001f752\U0001f76e\U0001f76f\U0001f770\U0001f771\U0001f776\U0001f775"
+    "\U0001f77c\U0001f77e\U0001f77f≗≛≬≭∺⫝̸⫝"
+    "⨳⫱⥇⥺⥹⤳⥈⋕⊾∡∢⿲"
+    "⿳⿴⿵⿶⿷⿸⿹⿺⿻⑂↹"
+)
+
+_GLYPH_PALETTES = {
+    "ascii":   " .:-=+*#%@",                                # familiar density ramp
+    "blocks":  " ·░▒▓█",           # shades — smooth tone steps
+    "boxdraw": " ·─│╱╲╳┼├┤┬"
+               "┴┌┐└┘═║╬",  # directional showcase
+    "favorites": _GLYPH_FAVORITES,
+}
+
+# A glyph counts as "directional" (usable for an edge substitution) only when its
+# own strokes are this coherent — a stroke, a slash, an arrow; not a busy symbol.
+_GLYPH_DIR_COHERENCE = 0.35
+
+
+def _clean_charset(text: str) -> List[str]:
+    """Dedupe a character set, dropping whitespace, control and combining marks."""
+    import unicodedata
+    seen, out = set(), []
+    for ch in text:
+        if ch in seen or ch.isspace():
+            continue
+        if unicodedata.combining(ch) or unicodedata.category(ch).startswith("C"):
+            continue
+        seen.add(ch)
+        out.append(ch)
+    return out
+
+
+def charset_from_glyph_json(data) -> str:
+    """Extract a character set from a glyph-archive export (path, dict or list).
+
+    Accepts the export shape ``{custom:[{cp}], favorites:[cp,...]}`` where each
+    ``cp`` is a hex codepoint string, a bare list of hex codepoints, or already
+    literal characters. Returns a plain string for ``glyph_chars``.
+    """
+    import json
+    import os
+    if isinstance(data, str):
+        if data.lstrip().startswith(("{", "[")):
+            data = json.loads(data)                         # raw JSON text
+        elif os.path.exists(data):
+            with open(data) as fh:
+                data = json.load(fh)                        # filesystem path
+        else:
+            data = list(data)                               # treat as literal chars
+
+    cps = []
+    if isinstance(data, dict):
+        for c in data.get("custom", []) or []:
+            cp = c.get("cp") if isinstance(c, dict) else c
+            if cp:
+                cps.append(cp)
+        cps += list(data.get("favorites", []) or [])
+        if not cps:
+            cps = list(data.get("codepoints", []) or [])
+    elif isinstance(data, list):
+        cps = data
+
+    out = []
+    for cp in cps:
+        if isinstance(cp, str) and len(cp) == 1:
+            out.append(cp)                                  # already a character
+            continue
+        try:
+            out.append(chr(int(str(cp), 16)))
+        except (ValueError, TypeError):
+            continue
+    return "".join(out)
+
+
+def _glyph_faces(p: Params):
+    """Resolve the font stack to a list of freetype Faces (first hit wins per char)."""
+    import os
+    import freetype
+    paths = [p.glyph_font] if p.glyph_font else _GLYPH_FONT_STACK
+    faces = []
+    for path in paths:
+        if not path or not os.path.exists(path):
+            continue
+        try:
+            faces.append(freetype.Face(path))
+        except Exception:                                   # unreadable/unsupported font
+            continue
+    if not faces:
+        raise RuntimeError(
+            "glyph mode: no usable font found; pass --glyph-font a .ttf/.otf path"
+        )
+    return faces
+
+
+def _analyze_glyph(faces, ch: str, raster_px: int, seg: int):
+    """Return a glyph record, or None if no font in the stack has this character.
+
+    ``polys`` are the font's native outline contours flattened to polylines in
+    normalized em space (y up, baseline at 0). ``cov`` is ink fraction of the em
+    box (the tonal rank); ``ang``/``coh`` are the dominant stroke orientation and
+    its coherence, used for edge-aware substitution.
+    """
+    import freetype
+    face = next((f for f in faces if f.get_char_index(ord(ch)) != 0), None)
+    if face is None:
+        return None
+    upem = float(face.units_per_EM or 2048)
+
+    # --- native outline (font's own vectors) -> normalized polylines ---
+    face.load_char(ch, freetype.FT_LOAD_NO_SCALE | freetype.FT_LOAD_NO_BITMAP)
+    adv = face.glyph.advance.x / upem
+    polys: list = []
+
+    def _pt(a):
+        return (a.x / upem, a.y / upem)
+
+    def move_to(a, _):
+        polys.append([_pt(a)])
+
+    def line_to(a, _):
+        polys[-1].append(_pt(a))
+
+    def conic_to(c, a, _):                                  # quadratic bezier
+        (x0, y0), (cx, cy), (x1, y1) = polys[-1][-1], _pt(c), _pt(a)
+        for i in range(1, seg + 1):
+            t = i / seg
+            mt = 1.0 - t
+            polys[-1].append((mt * mt * x0 + 2 * mt * t * cx + t * t * x1,
+                              mt * mt * y0 + 2 * mt * t * cy + t * t * y1))
+
+    def cubic_to(c1, c2, a, _):                            # cubic bezier
+        (x0, y0), (ax, ay), (bx, by), (x1, y1) = (polys[-1][-1], _pt(c1), _pt(c2), _pt(a))
+        for i in range(1, seg + 1):
+            t = i / seg
+            mt = 1.0 - t
+            polys[-1].append((
+                mt**3 * x0 + 3 * mt * mt * t * ax + 3 * mt * t * t * bx + t**3 * x1,
+                mt**3 * y0 + 3 * mt * mt * t * ay + 3 * mt * t * t * by + t**3 * y1))
+
+    try:
+        face.glyph.outline.decompose(None, move_to=move_to, line_to=line_to,
+                                     conic_to=conic_to, cubic_to=cubic_to)
+    except Exception:                                       # degenerate/empty outline
+        pass
+    polys = [np.asarray(pl, dtype=float) for pl in polys if len(pl) >= 2]
+
+    # --- rasterize the same glyph for tone rank + stroke orientation ---
+    face.set_pixel_sizes(0, raster_px)
+    face.load_char(ch, freetype.FT_LOAD_RENDER)
+    bm = face.glyph.bitmap
+    cov = ang = coh = 0.0
+    if bm.rows > 0 and bm.width > 0:
+        buf = np.array(bm.buffer, dtype=np.uint8)
+        arr = buf.reshape(bm.rows, bm.pitch)[:, :bm.width].astype(float)
+        cov = float((arr > 0).sum()) / float(raster_px * raster_px)
+        gy, gx = np.gradient(arr)
+        sxx, syy, sxy = (gx * gx).sum(), (gy * gy).sum(), (gx * gy).sum()
+        ang = float(0.5 * np.arctan2(2.0 * sxy, sxx - syy))
+        denom = sxx + syy
+        coh = float(np.hypot(sxx - syy, 2.0 * sxy) / denom) if denom > 1e-9 else 0.0
+
+    return {"ch": ch, "polys": polys, "adv": adv, "cov": cov, "ang": ang, "coh": coh}
+
+
+def render_glyph(gray, p: Params, width_mm, height_mm) -> List[np.ndarray]:
+    """ASCII / Unicode line art — a grid of glyphs whose ink density tracks tone.
+
+    Each glyph is analyzed once: the font's native outline (drawn as hairlines),
+    its ink coverage (tonal rank), and its dominant stroke orientation. The image
+    is pooled to a cell grid; every cell picks the glyph whose coverage matches
+    the local darkness. With ``--glyph-edge`` on, cells sitting on a coherent edge
+    instead pick the directional glyph whose stroke best aligns with that edge,
+    blended against the tonal match by the edge strength.
+    """
+    try:
+        import freetype  # noqa: F401
+    except ImportError as exc:                              # pragma: no cover
+        raise RuntimeError("glyph mode needs freetype-py; pip install freetype-py") from exc
+    from skimage.filters import gaussian
+    from skimage.transform import resize
+
+    faces = _glyph_faces(p)
+    source = p.glyph_chars if p.glyph_chars.strip() else \
+        _GLYPH_PALETTES.get(p.glyph_palette, _GLYPH_PALETTES["ascii"])
+    chars = _clean_charset(source)
+
+    recs = [r for r in (_analyze_glyph(faces, ch, 64, 8) for ch in chars)
+            if r is not None and r["polys"]]
+    if not recs:
+        return []
+
+    # Ramp sorted light->dark; index 0 is a synthetic BLANK so highlights stay empty.
+    recs.sort(key=lambda r: r["cov"])
+    cov = np.array([0.0] + [r["cov"] for r in recs])
+    cov_n = cov / (cov.max() or 1.0)                        # normalized 0..1
+    ang = np.array([0.0] + [r["ang"] for r in recs])
+    coh = np.array([0.0] + [r["coh"] for r in recs])
+    dir_mask = coh >= _GLYPH_DIR_COHERENCE
+    polys_by_glyph = [None] + [r["polys"] for r in recs]
+    adv_by_glyph = np.array([0.0] + [r["adv"] for r in recs])
+    G = len(cov_n)
+
+    # Cell grid: columns fixed, rows derived so cells honor --glyph-aspect.
+    cols = max(1, int(p.glyph_cols))
+    cw = width_mm / cols
+    ch_mm = cw * max(0.05, p.glyph_aspect)
+    rows = max(1, int(round(height_mm / ch_mm)))
+    ch_mm = height_mm / rows
+
+    bright = np.clip(resize(gray, (rows, cols), order=1, anti_aliasing=True,
+                            preserve_range=True), 0.0, 1.0)
+    target = (1.0 - bright) ** max(1e-6, p.glyph_gamma)     # per-cell darkness (rows,cols)
+
+    lam = float(p.glyph_edge)
+    if lam > 0.0:
+        # Pooled structure tensor -> per-cell dominant edge orientation + coherence.
+        g = gaussian(gray, sigma=1.5, preserve_range=True)
+        gy, gx = np.gradient(g)
+        sig = max(1.0, min(gray.shape) / max(rows, cols) * 0.5)
+        pool = lambda a: resize(gaussian(a, sigma=sig, preserve_range=True),
+                                (rows, cols), order=1, anti_aliasing=True,
+                                preserve_range=True)
+        sxx, syy, sxy = pool(gx * gx), pool(gy * gy), pool(gx * gy)
+        theta_img = 0.5 * np.arctan2(2.0 * sxy, sxx - syy)
+        denom = sxx + syy
+        coh_img = np.where(denom > 1e-12, np.hypot(sxx - syy, 2.0 * sxy) /
+                           np.maximum(denom, 1e-12), 0.0)
+
+        tone = np.abs(cov_n[None, :] - target.ravel()[:, None])    # (M,G)
+        dth = ang[None, :] - theta_img.ravel()[:, None]
+        adist = np.abs(((dth + np.pi / 2) % np.pi) - np.pi / 2) / (np.pi / 2)  # 0..1
+        dirpen = np.where(dir_mask[None, :], adist, 1.0)   # non-directional glyphs disfavored
+        lam_cell = (lam * (coh_img.ravel() >= p.glyph_edge_threshold))[:, None]
+        choice = np.argmin((1.0 - lam_cell) * tone + lam_cell * dirpen,
+                           axis=1).reshape(rows, cols)
+    else:
+        # Pure density: nearest coverage on the sorted ramp (no big score matrix).
+        tgt = target.ravel()
+        idx = np.clip(np.searchsorted(cov_n, tgt), 1, G - 1)
+        pick_low = (tgt - cov_n[idx - 1]) <= (cov_n[idx] - tgt)
+        choice = np.where(pick_low, idx - 1, idx).reshape(rows, cols)
+
+    mask = (bright > p.mask_threshold) if p.mask_threshold is not None else None
+
+    s_em = p.glyph_size * min(cw, ch_mm)                    # 1 em -> this many mm
+    y_center = 0.35                                         # em fraction ~ visual middle
+    out = []
+    for r in range(rows):
+        cyc = r * ch_mm + ch_mm / 2.0
+        for c in range(cols):
+            gi = int(choice[r, c])
+            if gi == 0 or (mask is not None and mask[r, c]):
+                continue                                    # blank cell / masked highlight
+            cxc = c * cw + cw / 2.0
+            x_center = adv_by_glyph[gi] / 2.0 if adv_by_glyph[gi] > 0 else 0.25
+            for pl in polys_by_glyph[gi]:
+                seg = np.column_stack([cxc + (pl[:, 0] - x_center) * s_em,
+                                       cyc - (pl[:, 1] - y_center) * s_em])
+                seg = rdp(seg, p.decimate)
+                if len(seg) >= 2:
+                    out.append(seg)
+    return out
+
+
 _MODES = {
     "wavy": render_wavy,
     "spacing": render_spacing,
@@ -846,6 +1154,7 @@ _MODES = {
     "filet": render_filet,
     "flow": render_flow,
     "tsp": render_tsp,
+    "glyph": render_glyph,
 }
 
 
@@ -1032,6 +1341,28 @@ def build_parser() -> argparse.ArgumentParser:
                    help="darkness weighting for dot density; <1 lifts midtones")
     t.add_argument("--tsp-improve", type=int, default=d.tsp_improve,
                    help="interleaved 2-opt + or-opt refinement passes (0 = raw Hilbert seed)")
+
+    gl = ap.add_argument_group("glyph")
+    gl.add_argument("--glyph-cols", type=int, default=d.glyph_cols,
+                    help="grid columns (rows derived from --glyph-aspect)")
+    gl.add_argument("--glyph-palette", choices=list(_GLYPH_PALETTES), default=d.glyph_palette,
+                    help="built-in character ramp")
+    gl.add_argument("--glyph-chars", default=d.glyph_chars,
+                    help="explicit character set, overrides --glyph-palette")
+    gl.add_argument("--glyph-json",
+                    help="load a glyph-archive export (JSON) as the character set")
+    gl.add_argument("--glyph-font", default=d.glyph_font,
+                    help="font file (.ttf/.otf); default is a built-in macOS stack")
+    gl.add_argument("--glyph-gamma", type=float, default=d.glyph_gamma,
+                    help="darkness response curve; <1 lifts midtones")
+    gl.add_argument("--glyph-size", type=float, default=d.glyph_size,
+                    help="glyph size as a fraction of the cell (0..1)")
+    gl.add_argument("--glyph-aspect", type=float, default=d.glyph_aspect,
+                    help="cell height/width ratio (1 = square)")
+    gl.add_argument("--glyph-edge", type=float, default=d.glyph_edge,
+                    help="edge-direction awareness 0..1 (0 = pure density)")
+    gl.add_argument("--glyph-edge-threshold", type=float, default=d.glyph_edge_threshold,
+                    help="min local edge coherence to allow a directional glyph swap")
     return ap
 
 
@@ -1045,6 +1376,12 @@ def params_from_args(ns) -> Params:
 
 def main(argv=None) -> int:
     ns = build_parser().parse_args(argv)
+    if getattr(ns, "glyph_json", None):                     # feed a glyph-archive export in
+        try:
+            ns.glyph_chars = charset_from_glyph_json(ns.glyph_json)
+        except (OSError, ValueError) as exc:
+            print(f"error: couldn't read --glyph-json: {exc}", file=sys.stderr)
+            return 1
     p = params_from_args(ns)
     try:
         svg, stats = image_to_svg(ns.input, p)

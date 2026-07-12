@@ -41,9 +41,10 @@ _NAMES: dict[str, str] = {}
 # None) and PEP 563 makes dataclass .type a string, so name the coercion here.
 _BOOL_FIELDS = {"invert", "freq_mod", "mesh", "islands_only"}
 _INT_FIELDS = {"samples", "resample", "levels", "cells_wide", "hatch_lines",
-               "points", "tsp_improve"}
+               "points", "tsp_improve", "glyph_cols"}
 _STR_FIELDS = {"mode", "color", "units", "spacing_style", "fill_style",
-               "smooth_mode", "contour_source"}
+               "smooth_mode", "contour_source", "glyph_palette", "glyph_chars",
+               "glyph_font"}
 _FLOAT_FIELDS = {f.name for f in fields(Params)} - _BOOL_FIELDS - _INT_FIELDS - _STR_FIELDS
 
 
@@ -389,6 +390,7 @@ _PAGE = r"""<!doctype html>
         <button data-m="filet">filet</button>
         <button data-m="flow">flow</button>
         <button data-m="tsp">tsp</button>
+        <button data-m="glyph">glyph</button>
       </div>
     </div>
 
@@ -512,6 +514,35 @@ _PAGE = r"""<!doctype html>
       <input type="range" id="tsp_improve" min="0" max="5" step="1" value="2">
     </div>
 
+    <!-- glyph -->
+    <div class="grp mode-glyph hide"><h3>Glyph <span class="info" data-tip="ASCII / Unicode line art: a grid of glyphs whose ink density tracks tone. Each glyph is drawn as the font's OWN hairline outline (no tracing) — tone is which glyph is chosen, never stroke thickness.">i</span></h3>
+      <label class="row"><span class="lbl">Columns<span class="info" data-tip="Number of glyph cells across. Rows follow from the cell aspect. More columns = finer detail, smaller glyphs.">i</span></span> <input class="num" type="number" id="n_glyph_cols"></label>
+      <input type="range" id="glyph_cols" min="16" max="200" step="1" value="80">
+      <label class="row"><span class="lbl">Palette<span class="info" data-tip="Character set, sorted light→dark by each glyph's measured ink coverage. Import a glyph-archive export to use your own set.">i</span></span></label>
+      <select id="glyph_palette">
+        <option value="ascii">ascii — . : - = + * # % @</option>
+        <option value="blocks">blocks — shades ░ ▒ ▓ █</option>
+        <option value="boxdraw">boxdraw — lines ─ │ ╱ ╲ (directional)</option>
+        <option value="favorites">favorites — bundled glyph-archive set</option>
+        <option value="imported" id="glyph_imported_opt" hidden>imported set</option>
+      </select>
+      <div class="glyph-import" style="display:flex;gap:10px;align-items:center;margin:8px 0 2px">
+        <button type="button" id="glyph_import_btn" class="mini">Import JSON…</button>
+        <input type="file" id="glyph_file" accept=".json,application/json" hidden>
+        <a href="https://mrinalghosh.github.io/glyph-archive/" target="_blank" rel="noopener">glyph-archive ↗</a>
+      </div>
+      <label class="row"><span class="lbl">Density gamma<span class="info" data-tip="Darkness response curve. Below 1 lifts midtones so mid-gray reaches denser glyphs — more contrast.">i</span></span> <input class="num" type="number" id="n_glyph_gamma"></label>
+      <input type="range" id="glyph_gamma" min="0.2" max="2" step="0.05" value="1">
+      <label class="row"><span class="lbl">Glyph size<span class="info" data-tip="Glyph size as a fraction of its cell. Below 1 leaves whitespace between glyphs; 1 packs them edge to edge.">i</span></span> <input class="num" type="number" id="n_glyph_size"></label>
+      <input type="range" id="glyph_size" min="0.3" max="1" step="0.02" value="0.92">
+      <label class="row"><span class="lbl">Cell aspect (h/w)<span class="info" data-tip="Cell height ÷ width. 1 = square cells; above 1 makes tall cells (classic terminal ≈ 2).">i</span></span> <input class="num" type="number" id="n_glyph_aspect"></label>
+      <input type="range" id="glyph_aspect" min="0.5" max="2.5" step="0.05" value="1">
+      <label class="row"><span class="lbl">Edge awareness<span class="info" data-tip="0 = pure density. Above 0, cells sitting on a coherent edge instead pick the glyph whose stroke best aligns with that edge (shines with the boxdraw palette), blended against tone by this strength.">i</span></span> <input class="num" type="number" id="n_glyph_edge"></label>
+      <input type="range" id="glyph_edge" min="0" max="1" step="0.05" value="0">
+      <label class="row"><span class="lbl">Edge threshold<span class="info" data-tip="Minimum local edge strength (coherence) before a cell may swap to a directional glyph. Higher = only the sharpest edges get directional strokes.">i</span></span> <input class="num" type="number" id="n_glyph_edge_threshold"></label>
+      <input type="range" id="glyph_edge_threshold" min="0" max="0.5" step="0.01" value="0.12">
+    </div>
+
     <hr class="sep">
 
     <!-- advanced (rows tagged mode-* apply to a subset; untagged = all modes) -->
@@ -597,6 +628,7 @@ const RANGES = ["width","mask_threshold","line_spacing","amp","amp_gamma","phase
   "cells_wide","fill_threshold","hatch_lines",
   "flow_spacing","flow_len","flow_smooth","flow_step","flow_gamma",
   "points","point_gamma","tsp_improve",
+  "glyph_cols","glyph_gamma","glyph_size","glyph_aspect","glyph_edge","glyph_edge_threshold",
   "samples","resample","decimate","stroke_width"];
 
 // paint the red fill on a range track (webkit reads --p; Firefox uses -moz-range-progress)
@@ -639,6 +671,11 @@ function collect(){
     flow_spacing: gmm("flow_spacing"), flow_len: gmm("flow_len"), flow_step: gmm("flow_step"),
     flow_smooth: g("flow_smooth"), flow_gamma: g("flow_gamma"),
     points: g("points"), point_gamma: g("point_gamma"), tsp_improve: g("tsp_improve"),
+    glyph_cols: g("glyph_cols"),
+    glyph_palette: $("glyph_palette").value === "imported" ? "favorites" : $("glyph_palette").value,
+    glyph_chars: $("glyph_palette").value === "imported" ? glyphImportChars : "",
+    glyph_gamma: g("glyph_gamma"), glyph_size: g("glyph_size"), glyph_aspect: g("glyph_aspect"),
+    glyph_edge: g("glyph_edge"), glyph_edge_threshold: g("glyph_edge_threshold"),
     samples: g("samples"), resample: g("resample"), decimate: gmm("decimate"),
     stroke_width: gmm("stroke_width"),
   };
@@ -667,7 +704,7 @@ $("modes").addEventListener("click", e=>{
   const b = e.target.closest("button"); if(!b) return;
   mode = b.dataset.m;
   [...$("modes").children].forEach(x=>x.classList.toggle("on", x===b));
-  document.querySelectorAll(".mode-wavy,.mode-spacing,.mode-contour,.mode-filet,.mode-flow,.mode-tsp")
+  document.querySelectorAll(".mode-wavy,.mode-spacing,.mode-contour,.mode-filet,.mode-flow,.mode-tsp,.mode-glyph")
     .forEach(el=>el.classList.add("hide"));
   document.querySelectorAll(".mode-"+mode).forEach(el=>el.classList.remove("hide"));
   if(mode==="filet") syncFiletHatch();   // sub-controls depend on fill style
@@ -703,6 +740,33 @@ $("spacing_style").addEventListener("change", render);
 $("contour_source").addEventListener("change", render);
 $("smooth_mode").addEventListener("change", render);
 $("fill_style").addEventListener("change", ()=>{ syncFiletHatch(); render(); });
+$("glyph_palette").addEventListener("change", render);
+
+// glyph: import a glyph-archive JSON export as a custom palette (parsed client-side)
+let glyphImportChars = "";
+$("glyph_import_btn").addEventListener("click", ()=>$("glyph_file").click());
+$("glyph_file").addEventListener("change", async ()=>{
+  const f = $("glyph_file").files[0]; $("glyph_file").value = ""; if(!f) return;
+  try{
+    const data = JSON.parse(await f.text());
+    const cps = [];
+    (data.custom||[]).forEach(c=> cps.push(typeof c==="string" ? c : c && c.cp));
+    (data.favorites||[]).forEach(c=> cps.push(c));
+    (data.codepoints||[]).forEach(c=> cps.push(c));
+    const chars = cps.filter(Boolean).map(cp=>{
+      try{ return (typeof cp==="string" && [...cp].length===1) ? cp
+                 : String.fromCodePoint(parseInt(cp,16)); }
+      catch(e){ return ""; }
+    }).join("");
+    if(![...chars].length){ $("err").textContent = "no glyphs found in that JSON"; return; }
+    glyphImportChars = chars;
+    const opt = $("glyph_imported_opt");
+    opt.hidden = false; opt.textContent = `imported — ${[...chars].length} glyphs`;
+    $("glyph_palette").value = "imported";
+    $("err").textContent = "";
+    render();
+  }catch(e){ $("err").textContent = "couldn't parse JSON: " + e; }
+});
 $("mask_enabled").addEventListener("change", ()=>{
   $("mask_ctl").classList.toggle("hide", !$("mask_enabled").checked);
   render();

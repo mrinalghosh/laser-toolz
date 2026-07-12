@@ -30,7 +30,8 @@ contours — never by line thickness or color.
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install pillow numpy scikit-image   # scikit-image (+ its scipy) needed for contour, flow, tsp
+pip install pillow numpy scikit-image   # scikit-image (+ its scipy) needed for contour, flow, tsp, glyph
+pip install freetype-py                  # only for glyph mode (reads glyph outlines from fonts)
 pip install flask                        # only for the optional web UI
 ```
 
@@ -40,7 +41,7 @@ pip install flask                        # only for the optional web UI
 python linify.py sample.png -o out.svg --mode wavy      # zero tuning needed
 ```
 
-## The six modes
+## The seven modes
 
 ### 1. `wavy` — displaced scanlines (the "face-in-lines" look)
 
@@ -195,6 +196,55 @@ Stippling is darkness-weighted rejection sampling (dot density is tone-accurate
 but not blue-noise), and the tour is a heuristic, not an optimal TSP solution —
 both are chosen so a few-thousand-dot portrait renders in well under a second.
 
+### 7. `glyph` — ASCII / Unicode line art (needs `freetype-py`)
+
+A grid of **characters** whose ink density tracks tone — an ASCII-art portrait,
+except every glyph is drawn as the font's **own vector outline** (crisp
+hairlines, no tracing), so it's laser-native. Each glyph in the palette is
+analyzed once: `freetype-py` hands over its native outline *and* rasterizes it so
+the mode can **rank glyphs by ink coverage** (light → dark) and **tag each one's
+dominant stroke orientation**. Every image cell then picks the glyph whose
+coverage matches its darkness. Tone is *which glyph* (how much contour packs into
+the cell), never stroke thickness — same laser rule as every other mode.
+
+**Edge-direction aware.** With `--glyph-edge > 0`, any cell sitting on a coherent
+edge instead picks the **directional glyph whose stroke best aligns with that
+edge** (reusing the same structure-tensor field as `flow`), blended against the
+tonal match by the edge strength. It shines with the `boxdraw` palette, whose
+`─ │ ╱ ╲ ┼` glyphs get tagged by angle and snap to the form's contours.
+
+```bash
+# density ramp — classic ASCII look
+python linify.py sample.png -o glyph.svg --mode glyph --glyph-palette ascii --glyph-cols 100
+
+# edge-aware line drawing with box-drawing glyphs
+python linify.py sample.png -o glyph.svg --mode glyph \
+    --glyph-palette boxdraw --glyph-edge 0.8 --glyph-cols 90
+
+# your own character set from a glyph-archive export
+python linify.py sample.png -o glyph.svg --mode glyph \
+    --glyph-json ~/Downloads/utf-8-collection.json --glyph-cols 80
+```
+
+- **`--glyph-palette`** is a built-in set — `ascii` (` .:-=+*#%@`), `blocks`
+  (shades `░▒▓█`), `boxdraw` (directional lines), or `favorites` (a set bundled
+  from a [glyph-archive](https://mrinalghosh.github.io/glyph-archive/) export).
+  Any palette is re-sorted by *measured* coverage, so ordering is font-honest.
+- **`--glyph-chars " .:-=+*#%@"`** or **`--glyph-json FILE`** override the palette
+  with an explicit set (JSON accepts a glyph-archive export: `custom` + `favorites`
+  codepoints). Glyphs missing from the font stack are dropped automatically.
+- **`--glyph-edge`** `0` is pure density; `0.5–1` biases edge cells toward
+  aligned strokes. **`--glyph-edge-threshold`** gates how strong an edge must be
+  before a directional swap is allowed.
+- **`--glyph-cols`** sets detail; **`--glyph-gamma`** lifts midtones;
+  **`--glyph-size`** / **`--glyph-aspect`** tune glyph fill and cell shape;
+  **`--glyph-font`** points at a specific `.ttf`/`.otf` (default is a macOS font
+  stack: Apple Symbols → Arial Unicode → Menlo → STIX, first hit per character).
+
+Shade glyphs (the `blocks` palette) rasterize to *many* tiny contours, so they're
+path-heavy — great tone, larger files; `ascii` / `boxdraw` / `favorites` stay
+lean.
+
 ## Background masking
 
 `--mask-threshold T` skips drawing anywhere the (effective) brightness is above
@@ -210,7 +260,7 @@ python linify.py horse.png -o horse.svg --mode wavy --mask-threshold 0.92
 
 | Flag | Default | Applies to | What it does |
 |------|---------|-----------|--------------|
-| `--mode` | `wavy` | all | `wavy` \| `spacing` \| `contour` \| `filet` \| `flow` \| `tsp` |
+| `--mode` | `wavy` | all | `wavy` \| `spacing` \| `contour` \| `filet` \| `flow` \| `tsp` \| `glyph` |
 | `-o, --output` | stdout | all | output SVG path |
 | `--width-mm` | `200` | all | physical output width in mm (height from aspect) |
 | `--units` | `mm` | all | header unit: `mm` \| `cm` \| `in` (`--width-mm` stays mm) |
@@ -247,6 +297,16 @@ python linify.py horse.png -o horse.svg --mode wavy --mask-threshold 0.92
 | `--points` | `4000` | tsp | target stipple dot count (tour vertices) |
 | `--point-gamma` | `1.0` | tsp | darkness weighting for dot density; `<1` lifts midtones |
 | `--tsp-improve` | `2` | tsp | interleaved 2-opt + or-opt passes (`0` = raw Hilbert seed) |
+| `--glyph-cols` | `80` | glyph | grid columns (rows from `--glyph-aspect`) |
+| `--glyph-palette` | `ascii` | glyph | `ascii` \| `blocks` \| `boxdraw` \| `favorites` |
+| `--glyph-chars` | — | glyph | explicit character set (overrides `--glyph-palette`) |
+| `--glyph-json` | — | glyph | load a glyph-archive export as the character set |
+| `--glyph-font` | macOS stack | glyph | font file (`.ttf`/`.otf`) for the outlines |
+| `--glyph-gamma` | `1.0` | glyph | darkness response curve; `<1` lifts midtones |
+| `--glyph-size` | `0.92` | glyph | glyph size as a fraction of the cell |
+| `--glyph-aspect` | `1.0` | glyph | cell height/width ratio (`1` = square) |
+| `--glyph-edge` | `0` | glyph | edge-direction awareness `0..1` (`0` = pure density) |
+| `--glyph-edge-threshold` | `0.12` | glyph | min edge coherence to allow a directional swap |
 
 ## Verifying the output
 
@@ -275,6 +335,9 @@ SVG update live, then download it. Extras beyond the CLI ergonomics:
   (e.g. `portrait_wavy.svg`), not a generic name.
 - **Advanced panel** — exposes the finer knobs (`samples`, `resample`,
   `decimate`, `stroke-width`, `freq-amount`) for granular tuning.
+- **Glyph palette import** — in `glyph` mode, an **Import JSON…** button loads a
+  [glyph-archive](https://mrinalghosh.github.io/glyph-archive/) export as a custom
+  character set (parsed in the browser), with a link straight to the archive.
 
 ```bash
 pip install flask

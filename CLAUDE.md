@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`laser-toolz` converts raster images into laser-ready hairline SVG line art for the Epilog laser cutter. One CLI (`linify.py`) with six interchangeable render modes, plus an optional Flask web UI (`server.py`) that reuses the CLI's rendering core unchanged.
+`laser-toolz` converts raster images into laser-ready hairline SVG line art for the Epilog laser cutter. One CLI (`linify.py`) with seven interchangeable render modes, plus an optional Flask web UI (`server.py`) that reuses the CLI's rendering core unchanged.
 
 ## The non-negotiable constraint
 
@@ -15,7 +15,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 # setup
 python3 -m venv .venv && source .venv/bin/activate
-pip install pillow numpy scikit-image   # scikit-image needed for contour/flow/tsp modes
+pip install pillow numpy scikit-image   # scikit-image needed for contour/flow/tsp/glyph modes
+pip install freetype-py                  # only for the glyph mode (reads font outlines)
 pip install flask                        # only for the web UI
 
 # CLI
@@ -36,7 +37,7 @@ There is no test suite, linter, or build step. `sample.png` is the synthetic tes
 
 The whole pipeline lives in **[linify.py](linify.py)** and flows in one direction:
 
-1. **[Params](linify.py#L50)** — a single `@dataclass` holding every tunable. This is the source of truth for defaults, shared by the CLI arg parser and the web server. Global fields first, then per-mode field groups (wavy / spacing / contour / filet / flow / tsp). When adding a knob, add it here first.
+1. **[Params](linify.py#L50)** — a single `@dataclass` holding every tunable. This is the source of truth for defaults, shared by the CLI arg parser and the web server. Global fields first, then per-mode field groups (wavy / spacing / contour / filet / flow / tsp / glyph). When adding a knob, add it here first.
 2. **[load_gray](linify.py#L109)** — decodes to a grayscale float array at working resolution (`--resample`), applies `--invert`.
 3. **A `render_*` function per mode**, all with the identical signature `(gray, p: Params, width_mm, height_mm) -> List[np.ndarray]`. Each returns a list of polylines as `(N,2)` arrays in **millimeter coordinates**. Modes are dispatched through the **[`_MODES`](linify.py#L735) registry** dict — the single point that maps a mode name to its function.
 4. **[polylines_to_svg](linify.py#L748)** — serializes polylines to the hairline SVG string (handles unit header via `_MM_PER_UNIT`, decimation formatting).
@@ -48,7 +49,7 @@ Shared geometry helpers used across modes: [`rdp`](linify.py#L188) (Ramer-Dougla
 
 **[server.py](server.py)** is a thin single-user Flask wrapper — no persistence. Uploaded images live in in-memory dicts keyed by a token (`_IMAGES` / `_NAMES`, capped at 24 entries). `/upload` decodes and stores, `/render` (POST JSON) returns SVG + stats for live preview, `/download` (GET) returns the same SVG as a named file attachment. Params are reconstructed from JSON via [`_params_from_json`](server.py#L56), which relies on explicit type-map sets (`_BOOL_FIELDS` / `_INT_FIELDS` / `_STR_FIELDS`, rest float) because `amp`/`mask_threshold` default to `None` and PEP 563 makes dataclass `.type` a string. When you add a `Params` field of a non-float type, add it to the matching set. The entire HTML/JS front-end is the inline `_PAGE` string at the bottom of the file.
 
-## The six modes (geometry, not thickness)
+## The seven modes (geometry, not thickness)
 
 - **wavy** — displaced horizontal scanlines; darkness modulates wiggle amplitude (clamped `< spacing/2` so lines never cross). `--amp-gamma` and `--phase-jitter` are the pure-geometry contrast knobs.
 - **spacing** — horizontal lines that pack denser in dark regions. `clean` style = clipped silhouette; `density` style = per-column accumulator for internal shading (dottier).
@@ -56,5 +57,6 @@ Shared geometry helpers used across modes: [`rdp`](linify.py#L188) (Ramer-Dougla
 - **filet** — filet-crochet grid of filled vs. open cells.
 - **flow** — edge-tangent streamline hatching following a structure-tensor field.
 - **tsp** — a single continuous line: weighted stipple points joined into one path by a Hilbert-curve seed, then refined with interleaved 2-opt + or-opt passes (`--tsp-improve`). The Hilbert seed avoids the long "jump-back" edges a nearest-neighbor tour leaves; or-opt relocates strays that 2-opt alone can't fix.
+- **glyph** — ASCII / Unicode line art: a grid of glyphs whose ink density tracks tone. Needs `freetype-py`, which hands over each glyph's **native font outline** (drawn as hairlines — no tracing) plus a rasterizer reused to rank glyphs by ink coverage and tag each one's dominant stroke orientation. Cells pick by coverage (`--glyph-palette` sorted light→dark); with `--glyph-edge`, cells on a coherent edge instead pick the directional glyph whose stroke aligns with it (reuses the flow structure-tensor math). Palettes: `ascii` / `blocks` / `boxdraw` / `favorites` (bundled from a glyph-archive export), or import any [glyph-archive](https://mrinalghosh.github.io/glyph-archive/) JSON via `--glyph-json` (CLI) / the Import button (web). `_GLYPH_FONT_STACK` is the per-glyph font fallback; `--glyph-font` overrides.
 
 See [README.md](README.md) for the full per-mode parameter reference and the parameter cheat-sheet table.
