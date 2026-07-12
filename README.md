@@ -5,7 +5,7 @@ Tools to generate and manipulate SVGs for the Epilog laser cutter.
 ## linify — image → laser-ready SVG line art
 
 Convert any raster image into **continuous hairline SVG lines** for laser
-cutting / perforation. Six interchangeable render modes, one parametric CLI,
+cutting / perforation. Seven interchangeable render modes, one parametric CLI,
 plus an optional local web UI for live experimentation.
 
 Everything is built around one non-negotiable rule: **the laser ignores stroke
@@ -30,7 +30,7 @@ contours — never by line thickness or color.
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install pillow numpy scikit-image   # scikit-image (+ its scipy) needed for contour, flow, tsp
+pip install pillow numpy scikit-image   # scikit-image (+ its scipy) needed for contour, flow, tsp, cyber
 pip install flask                        # only for the optional web UI
 ```
 
@@ -40,7 +40,7 @@ pip install flask                        # only for the optional web UI
 python linify.py sample.png -o out.svg --mode wavy      # zero tuning needed
 ```
 
-## The six modes
+## The seven modes
 
 ### 1. `wavy` — displaced scanlines (the "face-in-lines" look)
 
@@ -195,6 +195,52 @@ Stippling is darkness-weighted rejection sampling (dot density is tone-accurate
 but not blue-noise), and the tour is a heuristic, not an optimal TSP solution —
 both are chosen so a few-thousand-dot portrait renders in well under a second.
 
+### 7. `cyber` — cybersigilism (barbed tendrils)
+
+The **spiky, neo-tribal "organic-technology" look**: whip-like tendrils that flow
+along the form — using the same structure-tensor tangent field as `flow`, so they
+wrap the subject like veins or circuit-traces rather than scribbling at random —
+**curling harder toward a needle tip** and sprouting **thorns on alternating
+sides** at intervals (the barbed-wire signature). Each thorn **emerges tangent to
+the stem and curves off like a flame** — a smooth join, not a straight stick
+stabbed across the line — then tapers to a point. Tone stays pure geometry: darker
+regions seed **more** tendrils and grow them **longer**; nothing touches stroke width.
+
+The needle taper is the crux. Because the laser can't taper a stroke, a sharp
+spike has to be a *shape*: `--cyber-spike sliver` (default) renders each tendril
+and barb as a **closed outline that converges to a point** — a solid thorn even
+in hairline (~2× the paths). `--cyber-spike stroke` is a lighter alternative: a
+single **curved flick** per barb and a bare centerline per tendril.
+
+```bash
+# dense, barbed-hatching portrait (isolated subject)
+python linify.py sample.png -o cyber.svg --mode cyber --mask-threshold 0.9
+
+# sparse, elegant whips with lots of negative space
+python linify.py sample.png -o cyber.svg --mode cyber --mask-threshold 0.9 \
+    --cyber-spacing 5 --cyber-len 22 --cyber-curl 8 --cyber-taper 2.2 \
+    --cyber-barb-spacing 4.5 --cyber-gamma 0.7
+
+# bilateral sigil: reflect the left half, add circuit-node roots
+python linify.py sample.png -o sigil.svg --mode cyber --mask-threshold 0.9 \
+    --cyber-symmetry mirror --cyber-nodes --cyber-spacing 5 --cyber-gamma 0.7
+```
+
+- **`--cyber-spacing`** is the master density knob: small = dense barbed weave,
+  large = sparse flowing whips.
+- **`--cyber-curl`** / **`--cyber-taper`** set how whip-like each tendril reads —
+  more curl hooks the tip, higher taper sharpens the needle.
+- **`--cyber-barb-spacing`** `0` gives bare tendrils (no thorns);
+  **`--cyber-barb-angle`** sets how far each thorn curls off the stem (`0` flush,
+  `90` a quarter-turn hook, `>120` curling back).
+- **`--cyber-symmetry mirror`** mirrors the left half across the vertical center
+  for the centered, sigil-like composition; **`--cyber-nodes`** dots each tendril
+  root with a small circle (the techno accent).
+
+Both the field and the tone lever are shared with `flow`, so a `flow` setup you
+like transfers over — `cyber` just grows it into barbed tendrils instead of even
+hatch strokes.
+
 ## Background masking
 
 `--mask-threshold T` skips drawing anywhere the (effective) brightness is above
@@ -210,7 +256,7 @@ python linify.py horse.png -o horse.svg --mode wavy --mask-threshold 0.92
 
 | Flag | Default | Applies to | What it does |
 |------|---------|-----------|--------------|
-| `--mode` | `wavy` | all | `wavy` \| `spacing` \| `contour` \| `filet` \| `flow` \| `tsp` |
+| `--mode` | `wavy` | all | `wavy` \| `spacing` \| `contour` \| `filet` \| `flow` \| `tsp` \| `cyber` |
 | `-o, --output` | stdout | all | output SVG path |
 | `--width-mm` | `200` | all | physical output width in mm (height from aspect) |
 | `--units` | `mm` | all | header unit: `mm` \| `cm` \| `in` (`--width-mm` stays mm) |
@@ -247,6 +293,20 @@ python linify.py horse.png -o horse.svg --mode wavy --mask-threshold 0.92
 | `--points` | `4000` | tsp | target stipple dot count (tour vertices) |
 | `--point-gamma` | `1.0` | tsp | darkness weighting for dot density; `<1` lifts midtones |
 | `--tsp-improve` | `2` | tsp | interleaved 2-opt + or-opt passes (`0` = raw Hilbert seed) |
+| `--cyber-spacing` | `3.0` | cyber | mm between tendril seeds (master density knob) |
+| `--cyber-len` | `16` | cyber | mm base tendril arc length (grows longer in shadow) |
+| `--cyber-gamma` | `1.0` | cyber | seed-density response curve; `<1` lifts midtones |
+| `--cyber-curl` | `5.0` | cyber | deg/step hook — tendrils curl harder toward the tip |
+| `--cyber-width` | `1.1` | cyber | mm root width of a tendril sliver (a *shape*, not stroke width) |
+| `--cyber-taper` | `1.6` | cyber | width falloff exponent (higher = whippier needle tip) |
+| `--cyber-barb-spacing` | `3.2` | cyber | mm between thorns along a tendril (`0` = none) |
+| `--cyber-barb-len` | `3.4` | cyber | mm thorn length at the root (shrinks toward the tip) |
+| `--cyber-barb-angle` | `90` | cyber | deg a thorn curls through (emerges tangent; `0` flush, `90` quarter-turn hook, `>120` curls back) |
+| `--cyber-spike` | `sliver` | cyber | spike geometry: `sliver` (tapered outline) \| `stroke` (single V) |
+| `--cyber-symmetry` | `none` | cyber | `none` \| `mirror` (reflect left half across center) |
+| `--cyber-nodes` | off | cyber | draw a small circle node at each tendril root |
+| `--cyber-smooth` | `8.0` | cyber | structure-tensor blur sigma (px) — tendril-field coherence |
+| `--cyber-step` | `0.5` | cyber | mm integration step along a tendril |
 
 ## Verifying the output
 

@@ -39,11 +39,11 @@ _NAMES: dict[str, str] = {}
 
 # Explicit type map — can't infer from defaults (amp/mask_threshold default to
 # None) and PEP 563 makes dataclass .type a string, so name the coercion here.
-_BOOL_FIELDS = {"invert", "freq_mod", "mesh", "islands_only"}
+_BOOL_FIELDS = {"invert", "freq_mod", "mesh", "islands_only", "cyber_nodes"}
 _INT_FIELDS = {"samples", "resample", "levels", "cells_wide", "hatch_lines",
                "points", "tsp_improve"}
 _STR_FIELDS = {"mode", "color", "units", "spacing_style", "fill_style",
-               "smooth_mode", "contour_source"}
+               "smooth_mode", "contour_source", "cyber_spike", "cyber_symmetry"}
 _FLOAT_FIELDS = {f.name for f in fields(Params)} - _BOOL_FIELDS - _INT_FIELDS - _STR_FIELDS
 
 
@@ -389,6 +389,7 @@ _PAGE = r"""<!doctype html>
         <button data-m="filet">filet</button>
         <button data-m="flow">flow</button>
         <button data-m="tsp">tsp</button>
+        <button data-m="cyber">cyber</button>
       </div>
     </div>
 
@@ -512,6 +513,43 @@ _PAGE = r"""<!doctype html>
       <input type="range" id="tsp_improve" min="0" max="5" step="1" value="2">
     </div>
 
+    <!-- cyber -->
+    <div class="grp mode-cyber hide"><h3>Cyber <span class="info" data-tip="Cybersigilism: barbed tendrils that flow along the form (like veins / circuit-traces), curling to a needle tip and sprouting swept-back thorns. Tone = tendril density + length; spikes are tapered outlines, never a heavier stroke.">i</span></h3>
+      <label class="row"><span class="lbl">Spike geometry<span class="info" data-tip="'sliver' = each spike is a tapered closed outline that comes to a sharp point (solid thorn, ~2x paths). 'stroke' = a single flick-out V (lighter file, less solid).">i</span></span></label>
+      <select id="cyber_spike">
+        <option value="sliver">sliver — tapered outline (solid)</option>
+        <option value="stroke">stroke — single V (lighter)</option>
+      </select>
+      <label class="row"><span class="lbl">Symmetry<span class="info" data-tip="'mirror' reflects the left half across the vertical center for a bilateral, sigil-like composition. 'none' renders the image as-is.">i</span></span></label>
+      <select id="cyber_symmetry">
+        <option value="none">none</option>
+        <option value="mirror">mirror — reflect left half</option>
+      </select>
+      <label class="row"><span class="lbl">Seed spacing (<span class="uu">mm</span>)<span class="info" data-tip="Grid pitch between tendril roots. Smaller = denser, barbed-hatching look; larger = sparse, elegant whips with negative space.">i</span></span> <input class="num" type="number" id="n_cyber_spacing"></label>
+      <input type="range" id="cyber_spacing" min="1" max="10" step="0.1" value="3">
+      <label class="row"><span class="lbl">Tendril length (<span class="uu">mm</span>)<span class="info" data-tip="Base arc length of each tendril (grows longer in shadow). Longer reads as flowing whips.">i</span></span> <input class="num" type="number" id="n_cyber_len"></label>
+      <input type="range" id="cyber_len" min="4" max="40" step="0.5" value="16">
+      <label class="row"><span class="lbl">Curl (deg/step)<span class="info" data-tip="How hard tendrils hook toward their tip. 0 = straight strokes; higher = curling, whip-like barbs.">i</span></span> <input class="num" type="number" id="n_cyber_curl"></label>
+      <input type="range" id="cyber_curl" min="0" max="15" step="0.5" value="5">
+      <label class="row"><span class="lbl">Density gamma<span class="info" data-tip="Seed-density response curve. Below 1 lifts midtones so mid-gray sprouts more tendrils — fuller coverage.">i</span></span> <input class="num" type="number" id="n_cyber_gamma"></label>
+      <input type="range" id="cyber_gamma" min="0.2" max="2" step="0.05" value="1">
+      <label class="row"><span class="lbl">Tendril width (<span class="uu">mm</span>)<span class="info" data-tip="Root width of a tendril's tapered sliver (its physical thickness as a shape — NOT the laser stroke width). Tapers to a point at the tip.">i</span></span> <input class="num" type="number" id="n_cyber_width"></label>
+      <input type="range" id="cyber_width" min="0.2" max="3" step="0.05" value="1.1">
+      <label class="row"><span class="lbl">Taper<span class="info" data-tip="Width falloff exponent from root to tip. Higher = a whippier, sharper needle tip.">i</span></span> <input class="num" type="number" id="n_cyber_taper"></label>
+      <input type="range" id="cyber_taper" min="0.5" max="4" step="0.1" value="1.6">
+      <label class="row"><span class="lbl">Barb spacing (<span class="uu">mm</span>)<span class="info" data-tip="Distance between swept-back thorns along a tendril. 0 = no barbs (bare whips). Smaller = barbed-wire density.">i</span></span> <input class="num" type="number" id="n_cyber_barb_spacing"></label>
+      <input type="range" id="cyber_barb_spacing" min="0" max="10" step="0.1" value="3.2">
+      <label class="row"><span class="lbl">Barb length (<span class="uu">mm</span>)<span class="info" data-tip="Length of each thorn at the tendril root (shrinks toward the tip).">i</span></span> <input class="num" type="number" id="n_cyber_barb_len"></label>
+      <input type="range" id="cyber_barb_len" min="0.5" max="8" step="0.1" value="3.4">
+      <label class="row"><span class="lbl">Barb curl (deg)<span class="info" data-tip="How far each thorn curls as it grows. Thorns emerge tangent to the tendril (smooth join, no arrowhead): 0 = flush with the stem, 90 = a quarter-turn hook, above ~120 curls back over the stem.">i</span></span> <input class="num" type="number" id="n_cyber_barb_angle"></label>
+      <input type="range" id="cyber_barb_angle" min="0" max="150" step="1" value="90">
+      <label class="row"><span class="lbl">Field coherence (sigma px)<span class="info" data-tip="Structure-tensor blur that averages the tendril direction. Higher = smoother, more coherent flow; lower follows fine detail (and noise).">i</span></span> <input class="num" type="number" id="n_cyber_smooth"></label>
+      <input type="range" id="cyber_smooth" min="1" max="20" step="0.5" value="8">
+      <label class="row"><span class="lbl">Integration step (<span class="uu">mm</span>)<span class="info" data-tip="Distance marched per step along a tendril. Smaller = smoother curls and more points; larger = coarser, lighter files.">i</span></span> <input class="num" type="number" id="n_cyber_step"></label>
+      <input type="range" id="cyber_step" min="0.1" max="1.5" step="0.05" value="0.5">
+      <div class="chk"><input type="checkbox" id="cyber_nodes"><label for="cyber_nodes">Root nodes</label><span class="info" data-tip="Draw a small circle at each tendril root — a circuit-node accent for the techno side of the style.">i</span></div>
+    </div>
+
     <hr class="sep">
 
     <!-- advanced (rows tagged mode-* apply to a subset; untagged = all modes) -->
@@ -523,8 +561,8 @@ _PAGE = r"""<!doctype html>
         <input type="range" id="samples" class="mode-wavy mode-spacing" min="100" max="4000" step="10" value="800">
         <label class="row"><span class="lbl">Resample edge (px)<span class="info" data-tip="Working image resolution (longest edge, px). Higher recovers more detail but renders slower.">i</span></span> <input class="num" type="number" id="n_resample"></label>
         <input type="range" id="resample" min="200" max="2000" step="10" value="900">
-        <label class="row mode-wavy mode-spacing mode-contour mode-flow mode-tsp"><span class="lbl">Decimation (<span class="uu">mm</span>)<span class="info" data-tip="Collinear-point removal tolerance. Smaller keeps more points (heavier files); larger simplifies. Not used by filet (grid is already minimal).">i</span></span> <input class="num" type="number" id="n_decimate"></label>
-        <input type="range" id="decimate" class="mode-wavy mode-spacing mode-contour mode-flow mode-tsp" min="0" max="0.5" step="0.005" value="0.03">
+        <label class="row mode-wavy mode-spacing mode-contour mode-flow mode-tsp mode-cyber"><span class="lbl">Decimation (<span class="uu">mm</span>)<span class="info" data-tip="Collinear-point removal tolerance. Smaller keeps more points (heavier files); larger simplifies. Not used by filet (grid is already minimal).">i</span></span> <input class="num" type="number" id="n_decimate"></label>
+        <input type="range" id="decimate" class="mode-wavy mode-spacing mode-contour mode-flow mode-tsp mode-cyber" min="0" max="0.5" step="0.005" value="0.03">
         <label class="row"><span class="lbl">Stroke width (<span class="uu">mm</span>)<span class="info" data-tip="Hairline width. Tonally irrelevant — the laser ignores stroke width — it only affects on-screen visibility.">i</span></span> <input class="num" type="number" id="n_stroke_width"></label>
         <input type="range" id="stroke_width" min="0.001" max="0.5" step="0.001" value="0.02">
       </div>
@@ -575,6 +613,10 @@ const MM_FIELDS = {
   max_contour_len:{min:0,max:200,step:1},
   flow_spacing:{min:0.4,max:5,step:0.05}, flow_len:{min:1,max:30,step:0.5},
   flow_step:{min:0.1,max:1.5,step:0.05},
+  cyber_spacing:{min:1,max:10,step:0.1}, cyber_len:{min:4,max:40,step:0.5},
+  cyber_step:{min:0.1,max:1.5,step:0.05},
+  cyber_width:{min:0.2,max:3,step:0.05}, cyber_barb_spacing:{min:0,max:10,step:0.1},
+  cyber_barb_len:{min:0.5,max:8,step:0.1},
   decimate:{min:0,max:0.5,step:0.005}, stroke_width:{min:0.001,max:0.5,step:0.001},
 };
 const unitRound = v => +v.toFixed(unit==="mm" ? 3 : 4);
@@ -597,6 +639,8 @@ const RANGES = ["width","mask_threshold","line_spacing","amp","amp_gamma","phase
   "cells_wide","fill_threshold","hatch_lines",
   "flow_spacing","flow_len","flow_smooth","flow_step","flow_gamma",
   "points","point_gamma","tsp_improve",
+  "cyber_smooth","cyber_spacing","cyber_len","cyber_step","cyber_gamma","cyber_curl",
+  "cyber_width","cyber_taper","cyber_barb_spacing","cyber_barb_len","cyber_barb_angle",
   "samples","resample","decimate","stroke_width"];
 
 // paint the red fill on a range track (webkit reads --p; Firefox uses -moz-range-progress)
@@ -639,6 +683,12 @@ function collect(){
     flow_spacing: gmm("flow_spacing"), flow_len: gmm("flow_len"), flow_step: gmm("flow_step"),
     flow_smooth: g("flow_smooth"), flow_gamma: g("flow_gamma"),
     points: g("points"), point_gamma: g("point_gamma"), tsp_improve: g("tsp_improve"),
+    cyber_smooth: g("cyber_smooth"), cyber_spacing: gmm("cyber_spacing"),
+    cyber_len: gmm("cyber_len"), cyber_step: gmm("cyber_step"), cyber_gamma: g("cyber_gamma"),
+    cyber_curl: g("cyber_curl"), cyber_width: gmm("cyber_width"), cyber_taper: g("cyber_taper"),
+    cyber_barb_spacing: gmm("cyber_barb_spacing"), cyber_barb_len: gmm("cyber_barb_len"),
+    cyber_barb_angle: g("cyber_barb_angle"), cyber_spike: $("cyber_spike").value,
+    cyber_symmetry: $("cyber_symmetry").value, cyber_nodes: $("cyber_nodes").checked,
     samples: g("samples"), resample: g("resample"), decimate: gmm("decimate"),
     stroke_width: gmm("stroke_width"),
   };
@@ -667,7 +717,7 @@ $("modes").addEventListener("click", e=>{
   const b = e.target.closest("button"); if(!b) return;
   mode = b.dataset.m;
   [...$("modes").children].forEach(x=>x.classList.toggle("on", x===b));
-  document.querySelectorAll(".mode-wavy,.mode-spacing,.mode-contour,.mode-filet,.mode-flow,.mode-tsp")
+  document.querySelectorAll(".mode-wavy,.mode-spacing,.mode-contour,.mode-filet,.mode-flow,.mode-tsp,.mode-cyber")
     .forEach(el=>el.classList.add("hide"));
   document.querySelectorAll(".mode-"+mode).forEach(el=>el.classList.remove("hide"));
   if(mode==="filet") syncFiletHatch();   // sub-controls depend on fill style
@@ -698,10 +748,12 @@ $("units").addEventListener("change", ()=>{
 
 initPairs();
 ["color"].forEach(id=>$(id).addEventListener("input", debounced));
-["invert","freq_mod","mesh","islands_only"].forEach(id=>$(id).addEventListener("change", render));
+["invert","freq_mod","mesh","islands_only","cyber_nodes"].forEach(id=>$(id).addEventListener("change", render));
 $("spacing_style").addEventListener("change", render);
 $("contour_source").addEventListener("change", render);
 $("smooth_mode").addEventListener("change", render);
+$("cyber_spike").addEventListener("change", render);
+$("cyber_symmetry").addEventListener("change", render);
 $("fill_style").addEventListener("change", ()=>{ syncFiletHatch(); render(); });
 $("mask_enabled").addEventListener("change", ()=>{
   $("mask_ctl").classList.toggle("hide", !$("mask_enabled").checked);
