@@ -330,6 +330,19 @@ _PAGE = r"""<!doctype html>
   .swatches button:hover { transform:scale(1.15);
         box-shadow:0 0 0 3px color-mix(in srgb,var(--acc) 18%,transparent); }
 
+  /* glyph palette import — subtle button + accent-on-hover archive link */
+  .mini { padding:5px 11px; background:var(--field); color:var(--mut);
+        border:1px solid var(--line); border-radius:6px; cursor:pointer;
+        font-family:var(--mono); font-size:11.5px; letter-spacing:.02em;
+        transition:color .14s,border-color .14s,box-shadow .14s; }
+  .mini:hover { color:var(--fg); border-color:color-mix(in srgb,var(--acc) 45%,var(--line));
+        box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--acc) 30%,transparent); }
+  .mini:active { transform:translateY(1px); }
+  .glyph-import a { color:var(--mut); text-decoration:none;
+        font-family:var(--mono); font-size:11.5px; letter-spacing:.02em;
+        transition:color .14s; }
+  .glyph-import a:hover { color:var(--acc); }
+
   /* advanced disclosure (h3 base supplies the trailing rule + gap) */
   .adv-h { cursor:pointer; user-select:none; }
   .adv-h::before { content:""; flex:none; width:0; height:0; border-left:5px solid var(--mut);
@@ -527,7 +540,7 @@ _PAGE = r"""<!doctype html>
         <option value="imported" id="glyph_imported_opt" hidden>imported set</option>
       </select>
       <div class="glyph-import" style="display:flex;gap:10px;align-items:center;margin:8px 0 2px">
-        <button type="button" id="glyph_import_btn" class="mini">Import JSON…</button>
+        <button type="button" id="glyph_import_btn" class="mini">Import JSON</button>
         <input type="file" id="glyph_file" accept=".json,application/json" hidden>
         <a href="https://mrinalghosh.github.io/glyph-archive/" target="_blank" rel="noopener">glyph-archive ↗</a>
       </div>
