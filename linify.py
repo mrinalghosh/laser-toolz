@@ -1161,7 +1161,7 @@ _MODES = {
 # --------------------------------------------------------------------------- #
 # SVG serialization
 # --------------------------------------------------------------------------- #
-_COORD_DECIMALS = 3                                  # path grid: 0.001mm (< laser resolution)
+_COORD_DECIMALS = 2                                  # path grid: 0.01mm (< laser resolution)
 
 
 def polylines_to_svg(polylines, width_mm, height_mm, p: Params) -> str:
