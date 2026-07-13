@@ -1161,16 +1161,46 @@ _MODES = {
 # --------------------------------------------------------------------------- #
 # SVG serialization
 # --------------------------------------------------------------------------- #
+_COORD_DECIMALS = 3                                  # path grid: 0.001mm (< laser resolution)
+
+
 def polylines_to_svg(polylines, width_mm, height_mm, p: Params) -> str:
-    """Serialize mm-space polylines to a hairline SVG string."""
-    def fmt(v):  # compact fixed-point; strips trailing zeros
+    """Serialize mm-space polylines to a hairline SVG string.
+
+    Path data uses *relative* moves on a fixed integer grid (``_COORD_DECIMALS``
+    places). Consecutive polyline vertices sit microns apart, so their deltas are
+    tiny numbers that cost far fewer characters than absolute coordinates — a
+    ~40% smaller file, most visible in the glyph mode's dense outlines. Quantizing
+    each point to the grid *before* differencing means the deltas are exact
+    integer differences, so rounding can never accumulate along a path (important
+    for the tsp mode's single 10k-point tour).
+    """
+    def fmt(v):  # compact fixed-point; strips trailing zeros (viewBox / header)
         return f"{v:.3f}".rstrip("0").rstrip(".")
+
+    q = 10 ** _COORD_DECIMALS
+
+    def num(iv):  # integer grid units -> compact decimal string
+        sign = "-" if iv < 0 else ""
+        whole, frac = divmod(abs(iv), q)
+        if frac == 0:
+            return f"{sign}{whole}"
+        return f"{sign}{whole}.{f'{frac:0{_COORD_DECIMALS}d}'.rstrip('0')}"
+
+    def pair(a, b):  # "a b", dropping the separator when b is self-delimiting ('-')
+        sb = num(b)
+        return num(a) + ("" if sb[0] == "-" else " ") + sb
 
     paths = []
     for pl in polylines:
         if len(pl) < 2:
             continue
-        d = "M" + " L".join(f"{fmt(x)} {fmt(y)}" for x, y in pl)
+        pts = [(int(round(x * q)), int(round(y * q))) for x, y in pl]
+        px, py = pts[0]
+        d = "M" + pair(px, py)
+        for x, y in pts[1:]:
+            d += "l" + pair(x - px, y - py)
+            px, py = x, y
         paths.append(f'<path d="{d}"/>')
 
     # Coordinate space (paths + viewBox) is always mm; the physical size in the
