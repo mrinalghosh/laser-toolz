@@ -39,7 +39,7 @@ _NAMES: dict[str, str] = {}
 
 # Explicit type map — can't infer from defaults (amp/mask_threshold default to
 # None) and PEP 563 makes dataclass .type a string, so name the coercion here.
-_BOOL_FIELDS = {"invert", "freq_mod", "mesh", "islands_only"}
+_BOOL_FIELDS = {"invert", "freq_mod", "mesh", "islands_only", "glyph_instance"}
 _INT_FIELDS = {"samples", "resample", "levels", "cells_wide", "hatch_lines",
                "points", "tsp_improve", "glyph_cols"}
 _STR_FIELDS = {"mode", "color", "units", "spacing_style", "fill_style",
@@ -571,6 +571,7 @@ _PAGE = r"""<!doctype html>
         <input type="range" id="decimate" class="mode-wavy mode-spacing mode-contour mode-flow mode-tsp" min="0" max="0.5" step="0.005" value="0.03">
         <label class="row"><span class="lbl">Stroke width (<span class="uu">mm</span>)<span class="info" data-tip="Hairline width. Tonally irrelevant — the laser ignores stroke width — it only affects on-screen visibility.">i</span></span> <input class="num" type="number" id="n_stroke_width"></label>
         <input type="range" id="stroke_width" min="0.001" max="0.5" step="0.001" value="0.02">
+        <div class="chk mode-glyph"><input type="checkbox" id="glyph_instance"><label for="glyph_instance">Instance glyphs (smaller file)</label><span class="info" data-tip="Define each distinct glyph once and place it with &lt;use&gt; — cuts the file size a lot on dense grids. Geometry is identical to within 0.01mm. Uses SVG &lt;use&gt;/&lt;defs&gt;: Inkscape &amp; Illustrator handle it; older importers may not — verify yours before a real cut.">i</span></div>
       </div>
     </div>
 
@@ -689,6 +690,7 @@ function collect(){
     glyph_chars: $("glyph_palette").value === "imported" ? glyphImportChars : "",
     glyph_gamma: g("glyph_gamma"), glyph_size: g("glyph_size"), glyph_aspect: g("glyph_aspect"),
     glyph_edge: g("glyph_edge"), glyph_edge_threshold: g("glyph_edge_threshold"),
+    glyph_instance: $("glyph_instance").checked,
     samples: g("samples"), resample: g("resample"), decimate: gmm("decimate"),
     stroke_width: gmm("stroke_width"),
   };
@@ -748,7 +750,7 @@ $("units").addEventListener("change", ()=>{
 
 initPairs();
 ["color"].forEach(id=>$(id).addEventListener("input", debounced));
-["invert","freq_mod","mesh","islands_only"].forEach(id=>$(id).addEventListener("change", render));
+["invert","freq_mod","mesh","islands_only","glyph_instance"].forEach(id=>$(id).addEventListener("change", render));
 $("spacing_style").addEventListener("change", render);
 $("contour_source").addEventListener("change", render);
 $("smooth_mode").addEventListener("change", render);

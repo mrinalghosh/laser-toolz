@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Importer probe for the glyph mode's "instance glyphs" output.
+
+  Open this in your target editor (Affinity Designer, then print-to-Epilog as
+  usual). Each row draws the letter "F" three times a different way. A correct
+  importer shows every row as 3 evenly-spaced F's. Read the result:
+
+    Row A  flat path geometry (control) ......... MUST be correct
+    Row B  use with x/y attributes ............. matplotlib #20910: Affinity drops these
+    Row C  use with transform=translate ........ the form the instance option emits
+    Row D  use with transform translate + scale   translate + non-uniform size
+
+  If Row C (and D) show 3 separated F's, glyph instancing is safe for your
+  pipeline. If they collapse into one blob at a corner, keep instancing OFF.
+  Whatever the screen shows, confirm select-all reports many objects and that
+  a test cut places them correctly before committing real material.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     version="1.1" width="120mm" height="45mm" viewBox="0 0 120 45">
+  <defs>
+    <!-- one hairline "F" glyph at local origin (7 wide x 10 tall) -->
+    <path id="F" d="M0 10 L0 0 L7 0 M0 5 L5 5"
+          fill="none" stroke="#ff0000" stroke-width="0.1"/>
+  </defs>
+
+  <g fill="none" stroke="#ff0000" stroke-width="0.1">
+    <!-- ROW A: flattened control geometry, no <use> -->
+    <path d="M5 15 L5 5 L12 5 M5 10 L10 10"/>
+    <path d="M25 15 L25 5 L32 5 M25 10 L30 10"/>
+    <path d="M45 15 L45 5 L52 5 M45 10 L50 10"/>
+  </g>
+
+  <!-- ROW B: <use> with x/y attributes (matplotlib's broken path) -->
+  <use xlink:href="#F" x="5"  y="15"/>
+  <use xlink:href="#F" x="25" y="15"/>
+  <use xlink:href="#F" x="45" y="15"/>
+
+  <!-- ROW C: use with transform=translate (what the instance option emits) -->
+  <use xlink:href="#F" transform="translate(65 5)"/>
+  <use xlink:href="#F" transform="translate(85 5)"/>
+  <use xlink:href="#F" transform="translate(105 5)"/>
+
+  <!-- ROW D: translate + scale -->
+  <use xlink:href="#F" transform="translate(65 25) scale(1.0)"/>
+  <use xlink:href="#F" transform="translate(85 25) scale(0.7)"/>
+  <use xlink:href="#F" transform="translate(105 25) scale(1.3)"/>
+</svg>

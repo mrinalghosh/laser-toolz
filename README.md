@@ -245,6 +245,17 @@ Shade glyphs (the `blocks` palette) rasterize to *many* tiny contours, so they'r
 path-heavy — great tone, larger files; `ascii` / `boxdraw` / `favorites` stay
 lean.
 
+**`--glyph-instance`** shrinks path-heavy grids further: instead of repeating a
+glyph's outline in every cell, it defines each distinct glyph once in `<defs>`
+and drops one `<use transform="translate(…)">` per cell. On a dense grid that's
+commonly a 3–5× smaller file (the bundled sample: 1.45 MB → ~280 KB), and the
+resolved geometry is identical to within the 0.01 mm coordinate grid. The catch
+is it relies on SVG `<use>`/`<defs>`: Inkscape and Illustrator flatten them on
+import, but some importers don't — notably older **Affinity Designer** ignored
+the `x`/`y` attributes on `<use>` (this uses `transform="translate"`, the form
+Affinity's own fix adopted, but **verify a proof in your importer before a real
+cut**). Off by default; it lives under **Advanced** in the web UI.
+
 ## Background masking
 
 `--mask-threshold T` skips drawing anywhere the (effective) brightness is above
@@ -307,6 +318,7 @@ python linify.py horse.png -o horse.svg --mode wavy --mask-threshold 0.92
 | `--glyph-aspect` | `1.0` | glyph | cell height/width ratio (`1` = square) |
 | `--glyph-edge` | `0` | glyph | edge-direction awareness `0..1` (`0` = pure density) |
 | `--glyph-edge-threshold` | `0.12` | glyph | min edge coherence to allow a directional swap |
+| `--glyph-instance` | off | glyph | define each glyph once in `<defs>`, place with `<use>` (smaller file; verify importer) |
 
 ## Verifying the output
 

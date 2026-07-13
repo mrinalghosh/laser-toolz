@@ -118,6 +118,7 @@ class Params:
     glyph_aspect: float = 1.0        # cell height/width ratio (1 = square cells)
     glyph_edge: float = 0.0          # edge-direction awareness 0..1 (0 = pure density)
     glyph_edge_threshold: float = 0.12  # min local edge coherence to allow a directional swap
+    glyph_instance: bool = False     # emit each glyph once in <defs>, place with <use> (smaller file)
 
 
 # --------------------------------------------------------------------------- #
@@ -1047,6 +1048,23 @@ def _analyze_glyph(faces, ch: str, raster_px: int, seg: int):
     return {"ch": ch, "polys": polys, "adv": adv, "cov": cov, "ang": ang, "coh": coh}
 
 
+class GlyphInstances:
+    """Instanced glyph output: distinct glyph outlines defined once, placed many times.
+
+    ``glyphs`` maps a glyph id to its list of local-origin polylines (mm, y down).
+    ``placements`` is a list of ``(glyph_id, tx, ty)`` cell centers. Serialized to
+    ``<defs>`` + one ``<use transform="translate(tx ty)">`` per placement — much
+    smaller than repeating the outline per cell, and importable by Affinity (which
+    ignores x/y attributes on <use> but honors translate). Only ``render_glyph``
+    with ``--glyph-instance`` returns this; every other mode returns flat polylines.
+    """
+    __slots__ = ("glyphs", "placements")
+
+    def __init__(self, glyphs, placements):
+        self.glyphs = glyphs
+        self.placements = placements
+
+
 def render_glyph(gray, p: Params, width_mm, height_mm) -> List[np.ndarray]:
     """ASCII / Unicode line art — a grid of glyphs whose ink density tracks tone.
 
@@ -1129,21 +1147,51 @@ def render_glyph(gray, p: Params, width_mm, height_mm) -> List[np.ndarray]:
 
     s_em = p.glyph_size * min(cw, ch_mm)                    # 1 em -> this many mm
     y_center = 0.35                                         # em fraction ~ visual middle
+
+    def _cell_center(r, c):
+        return c * cw + cw / 2.0, r * ch_mm + ch_mm / 2.0
+
+    def _placed(gi):                                        # glyph gi's outlines at local origin (y down, mm)
+        x_center = adv_by_glyph[gi] / 2.0 if adv_by_glyph[gi] > 0 else 0.25
+        segs = []
+        for pl in polys_by_glyph[gi]:
+            seg = np.column_stack([(pl[:, 0] - x_center) * s_em,
+                                   -(pl[:, 1] - y_center) * s_em])
+            seg = rdp(seg, p.decimate)                      # RDP is translation-invariant
+            if len(seg) >= 2:
+                segs.append(seg)
+        return segs
+
+    if p.glyph_instance:
+        # Instanced output: define each distinct glyph once, place with one
+        # <use transform="translate(...)"> per cell. Affinity Designer's importer
+        # ignores x/y attributes on <use> (matplotlib #20910) but honors translate,
+        # so this stays importable while collapsing thousands of outline copies.
+        local = {}
+        placements = []
+        for r in range(rows):
+            for c in range(cols):
+                gi = int(choice[r, c])
+                if gi == 0 or (mask is not None and mask[r, c]):
+                    continue                                # blank cell / masked highlight
+                segs = local.get(gi)
+                if segs is None:
+                    segs = local[gi] = _placed(gi)
+                if not segs:
+                    continue
+                cx, cy = _cell_center(r, c)
+                placements.append((gi, cx, cy))
+        return GlyphInstances(local, placements)
+
     out = []
     for r in range(rows):
-        cyc = r * ch_mm + ch_mm / 2.0
         for c in range(cols):
             gi = int(choice[r, c])
             if gi == 0 or (mask is not None and mask[r, c]):
                 continue                                    # blank cell / masked highlight
-            cxc = c * cw + cw / 2.0
-            x_center = adv_by_glyph[gi] / 2.0 if adv_by_glyph[gi] > 0 else 0.25
-            for pl in polys_by_glyph[gi]:
-                seg = np.column_stack([cxc + (pl[:, 0] - x_center) * s_em,
-                                       cyc - (pl[:, 1] - y_center) * s_em])
-                seg = rdp(seg, p.decimate)
-                if len(seg) >= 2:
-                    out.append(seg)
+            cx, cy = _cell_center(r, c)
+            for seg in _placed(gi):
+                out.append(seg + (cx, cy))                  # translate local outline to the cell
     return out
 
 
@@ -1162,6 +1210,56 @@ _MODES = {
 # SVG serialization
 # --------------------------------------------------------------------------- #
 _COORD_DECIMALS = 2                                  # path grid: 0.01mm (< laser resolution)
+_Q = 10 ** _COORD_DECIMALS
+
+
+def _fmt(v):  # compact fixed-point; strips trailing zeros (viewBox / header dims)
+    return f"{v:.3f}".rstrip("0").rstrip(".")
+
+
+def _num(iv):  # integer grid units -> compact decimal string
+    sign = "-" if iv < 0 else ""
+    whole, frac = divmod(abs(iv), _Q)
+    if frac == 0:
+        return f"{sign}{whole}"
+    return f"{sign}{whole}.{f'{frac:0{_COORD_DECIMALS}d}'.rstrip('0')}"
+
+
+def _pair(a, b):  # "a b", dropping the separator when b is self-delimiting ('-')
+    sb = _num(b)
+    return _num(a) + ("" if sb[0] == "-" else " ") + sb
+
+
+def _path_d(pl):
+    """Relative-move path data for one mm-space polyline (see polylines_to_svg)."""
+    pts = [(int(round(x * _Q)), int(round(y * _Q))) for x, y in pl]
+    px, py = pts[0]
+    d = "M" + _pair(px, py)
+    for x, y in pts[1:]:
+        d += "l" + _pair(x - px, y - py)
+        px, py = x, y
+    return d
+
+
+def _svg_document(body, width_mm, height_mm, p: Params, extra_svg_attr=""):
+    """Wrap a serialized body in the hairline SVG shell (shared header)."""
+    # Coordinate space (paths + viewBox) is always mm; the physical size in the
+    # header is the same length expressed in the requested unit. viewBox units need
+    # not equal header units — the header sets true physical size, the viewBox is
+    # just the internal grid — so the file imports at correct scale either way.
+    per = _MM_PER_UNIT.get(p.units, 1.0)
+    w, h = _fmt(width_mm), _fmt(height_mm)               # viewBox / path units (mm)
+    dw, dh = _fmt(width_mm / per), _fmt(height_mm / per)  # header, in display unit
+    return (
+        f'<?xml version="1.0" encoding="UTF-8"?>\n'
+        f'<svg xmlns="http://www.w3.org/2000/svg" version="1.1"{extra_svg_attr}\n'
+        f'     width="{dw}{p.units}" height="{dh}{p.units}" viewBox="0 0 {w} {h}">\n'
+        f'  <g class="ink" fill="none" stroke="{p.color}" stroke-width="{p.stroke_width}"\n'
+        f'     stroke-linecap="round" stroke-linejoin="round">\n'
+        f"{body}\n"
+        f"  </g>\n"
+        f"</svg>\n"
+    )
 
 
 def polylines_to_svg(polylines, width_mm, height_mm, p: Params) -> str:
@@ -1175,52 +1273,32 @@ def polylines_to_svg(polylines, width_mm, height_mm, p: Params) -> str:
     integer differences, so rounding can never accumulate along a path (important
     for the tsp mode's single 10k-point tour).
     """
-    def fmt(v):  # compact fixed-point; strips trailing zeros (viewBox / header)
-        return f"{v:.3f}".rstrip("0").rstrip(".")
+    paths = [f'<path d="{_path_d(pl)}"/>' for pl in polylines if len(pl) >= 2]
+    return _svg_document("\n".join(paths), width_mm, height_mm, p)
 
-    q = 10 ** _COORD_DECIMALS
 
-    def num(iv):  # integer grid units -> compact decimal string
-        sign = "-" if iv < 0 else ""
-        whole, frac = divmod(abs(iv), q)
-        if frac == 0:
-            return f"{sign}{whole}"
-        return f"{sign}{whole}.{f'{frac:0{_COORD_DECIMALS}d}'.rstrip('0')}"
+def glyph_instances_to_svg(inst: "GlyphInstances", width_mm, height_mm, p: Params) -> str:
+    """Serialize instanced glyph output: each glyph defined once, placed with <use>.
 
-    def pair(a, b):  # "a b", dropping the separator when b is self-delimiting ('-')
-        sb = num(b)
-        return num(a) + ("" if sb[0] == "-" else " ") + sb
-
-    paths = []
-    for pl in polylines:
-        if len(pl) < 2:
-            continue
-        pts = [(int(round(x * q)), int(round(y * q))) for x, y in pl]
-        px, py = pts[0]
-        d = "M" + pair(px, py)
-        for x, y in pts[1:]:
-            d += "l" + pair(x - px, y - py)
-            px, py = x, y
-        paths.append(f'<path d="{d}"/>')
-
-    # Coordinate space (paths + viewBox) is always mm; the physical size in the
-    # header is the same length expressed in the requested unit. viewBox units need
-    # not equal header units — the header sets true physical size, the viewBox is
-    # just the internal grid — so the file imports at correct scale either way.
-    per = _MM_PER_UNIT.get(p.units, 1.0)
-    w, h = fmt(width_mm), fmt(height_mm)                  # viewBox / path units (mm)
-    dw, dh = fmt(width_mm / per), fmt(height_mm / per)    # header, in display unit
-    body = "\n".join(paths)
-    return (
-        f'<?xml version="1.0" encoding="UTF-8"?>\n'
-        f'<svg xmlns="http://www.w3.org/2000/svg" version="1.1"\n'
-        f'     width="{dw}{p.units}" height="{dh}{p.units}" viewBox="0 0 {w} {h}">\n'
-        f'  <g class="ink" fill="none" stroke="{p.color}" stroke-width="{p.stroke_width}"\n'
-        f'     stroke-linecap="round" stroke-linejoin="round">\n'
-        f"{body}\n"
-        f"  </g>\n"
-        f"</svg>\n"
-    )
+    Only the glyphs actually placed are defined. Each cell becomes a single
+    ``<use xlink:href="#gN" transform="translate(tx ty)">`` — Affinity Designer's
+    importer ignores x/y attributes on <use> (matplotlib #20910) but honors
+    translate, which is also what the merged matplotlib fix (PR #28504) switched
+    to. Collapsing thousands of repeated outlines into ~one def per distinct glyph
+    is a large size win on dense grids.
+    """
+    used = sorted({gi for gi, _, _ in inst.placements})
+    defs = []
+    for gi in used:
+        inner = "".join(f'<path d="{_path_d(seg)}"/>' for seg in inst.glyphs[gi])
+        defs.append(f'<g id="g{gi}">{inner}</g>')
+    uses = []
+    for gi, tx, ty in inst.placements:
+        t = f"{_num(int(round(tx * _Q)))} {_num(int(round(ty * _Q)))}"
+        uses.append(f'<use xlink:href="#g{gi}" transform="translate({t})"/>')
+    body = "  <defs>\n    " + "\n    ".join(defs) + "\n  </defs>\n" + "\n".join(uses)
+    return _svg_document(body, width_mm, height_mm, p,
+                         extra_svg_attr=' xmlns:xlink="http://www.w3.org/1999/xlink"')
 
 
 # --------------------------------------------------------------------------- #
@@ -1237,9 +1315,18 @@ def image_to_svg(source, p: Params):
     width_mm = float(p.width_mm)
     height_mm = width_mm * aspect
 
-    polylines = _MODES[p.mode](gray, p, width_mm, height_mm)
+    result = _MODES[p.mode](gray, p, width_mm, height_mm)
 
-    svg = polylines_to_svg(polylines, width_mm, height_mm, p)
+    if isinstance(result, GlyphInstances):
+        svg = glyph_instances_to_svg(result, width_mm, height_mm, p)
+        n_paths = len(result.placements)                 # one <use> per placed cell
+        n_points = int(sum(sum(len(seg) for seg in result.glyphs[gi])
+                           for gi, _, _ in result.placements))
+    else:
+        svg = polylines_to_svg(result, width_mm, height_mm, p)
+        n_paths = len(result)
+        n_points = int(sum(len(pl) for pl in result))
+
     per = _MM_PER_UNIT.get(p.units, 1.0)
     stats = {
         "mode": p.mode,
@@ -1248,8 +1335,8 @@ def image_to_svg(source, p: Params):
         "units": p.units,
         "width_disp": round(width_mm / per, 4),
         "height_disp": round(height_mm / per, 4),
-        "paths": len(polylines),
-        "points": int(sum(len(pl) for pl in polylines)),
+        "paths": n_paths,
+        "points": n_points,
     }
     return svg, stats
 
@@ -1393,6 +1480,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="edge-direction awareness 0..1 (0 = pure density)")
     gl.add_argument("--glyph-edge-threshold", type=float, default=d.glyph_edge_threshold,
                     help="min local edge coherence to allow a directional glyph swap")
+    gl.add_argument("--glyph-instance", action="store_true", default=d.glyph_instance,
+                    help="define each glyph once in <defs>, place with <use> "
+                         "(smaller file; verify your SVG importer handles <use>)")
     return ap
 
 
