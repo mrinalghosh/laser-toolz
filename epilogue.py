@@ -123,7 +123,7 @@ def _parse_transform(s: Optional[str]):
     if not s:
         return M
     for name, arg in _TRANSFORM_RE.findall(s):
-        nums = [float(v) for v in re.split(r"[\s,]+", arg.strip()) if v]
+        nums = [float(v) for v in _NUM_RE.findall(arg)]  # findall, not split:
         if name == "matrix" and len(nums) == 6:
             T = tuple(nums)
         elif name == "translate":
@@ -253,6 +253,8 @@ def _parse_path_d(d: str):
         if d[i].isalpha():
             cmd = d[i]
             i += 1
+        if cmd is None:                 # data must open with a command letter
+            break
         rel = cmd.islower()
         C = cmd.upper()
 
@@ -297,29 +299,39 @@ def _parse_path_d(d: str):
             start_sub(cx, cy); sx, sy = cx, cy
         if C == "L":
             x = read_num(); y = read_num()
+            if None in (x, y):
+                break
             if rel:
                 x, y = cx + x, cy + y
             cur["segs"].append(("L", x, y)); cx, cy = x, y
             pcx = pqx = None
         elif C == "H":
             x = read_num()
+            if x is None:
+                break
             x = cx + x if rel else x
             cur["segs"].append(("L", x, cy)); cx = x
             pcx = pqx = None
         elif C == "V":
             y = read_num()
+            if y is None:
+                break
             y = cy + y if rel else y
             cur["segs"].append(("L", cx, y)); cy = y
             pcx = pqx = None
         elif C == "C":
             x1 = read_num(); y1 = read_num(); x2 = read_num()
             y2 = read_num(); x = read_num(); y = read_num()
+            if None in (x1, y1, x2, y2, x, y):
+                break
             if rel:
                 x1, y1, x2, y2, x, y = cx+x1, cy+y1, cx+x2, cy+y2, cx+x, cy+y
             cur["segs"].append(("C", x1, y1, x2, y2, x, y))
             pcx, pcy = x2, y2; cx, cy = x, y; pqx = None
         elif C == "S":
             x2 = read_num(); y2 = read_num(); x = read_num(); y = read_num()
+            if None in (x2, y2, x, y):
+                break
             if rel:
                 x2, y2, x, y = cx+x2, cy+y2, cx+x, cy+y
             x1 = 2*cx - pcx if pcx is not None else cx
@@ -328,12 +340,16 @@ def _parse_path_d(d: str):
             pcx, pcy = x2, y2; cx, cy = x, y; pqx = None
         elif C == "Q":
             qx = read_num(); qy = read_num(); x = read_num(); y = read_num()
+            if None in (qx, qy, x, y):
+                break
             if rel:
                 qx, qy, x, y = cx+qx, cy+qy, cx+x, cy+y
             cur["segs"].append(_quad_to_cubic(cx, cy, qx, qy, x, y))
             pqx, pqy = qx, qy; cx, cy = x, y; pcx = None
         elif C == "T":
             x = read_num(); y = read_num()
+            if None in (x, y):
+                break
             if rel:
                 x, y = cx+x, cy+y
             qx = 2*cx - pqx if pqx is not None else cx
@@ -344,7 +360,7 @@ def _parse_path_d(d: str):
             rx = read_num(); ry = read_num(); rot = read_num()
             large = read_flag(); sweep = read_flag()
             x = read_num(); y = read_num()
-            if x is None:
+            if None in (rx, ry, rot, x, y):
                 break
             if rel:
                 x, y = cx+x, cy+y
@@ -502,10 +518,19 @@ _SKIP_DIRECT = {"defs", "symbol", "clipPath", "mask", "marker", "pattern",
                 "desc", "style", "filter"}
 
 
+def _is_hidden(el) -> bool:
+    """True if the element (and its subtree) is display:none — e.g. an Inkscape
+    hidden layer. We must NOT cut hidden geometry."""
+    if el.get("display") == "none":
+        return True
+    style = el.get("style")
+    return bool(style) and re.search(r"display\s*:\s*none", style) is not None
+
+
 def _leaves_from(el, ctm, style, ids, warns, depth=0):
     """Recursively collect flattened leaves (mm-space subpaths + style)."""
     tag = _tag(el)
-    if tag in _SKIP_DIRECT:
+    if tag in _SKIP_DIRECT or _is_hidden(el):
         return []
     ctm = _mul(ctm, _parse_transform(el.get("transform")))
     style = {**style, **_own_style(el)}
@@ -527,6 +552,14 @@ def _leaves_from(el, ctm, style, ids, warns, depth=0):
             return leaves
         ux, uy = _f(el, "x"), _f(el, "y")
         use_ctm = _mul(ctm, (1, 0, 0, 1, ux, uy))
+        # <use> of a <symbol>/<svg> renders that element's *children* (the
+        # symbol itself is never drawn directly, so _leaves_from would skip it).
+        if _tag(ref) in ("symbol", "svg"):
+            rctm = _mul(use_ctm, _parse_transform(ref.get("transform")))
+            rstyle = {**style, **_own_style(ref)}
+            for child in ref:
+                leaves += _leaves_from(child, rctm, rstyle, ids, warns, depth + 1)
+            return leaves
         return _leaves_from(ref, use_ctm, style, ids, warns, depth + 1)
 
     if tag == "text":
@@ -594,8 +627,9 @@ def load_svg(source, p: EpiParams):
 
     warns: Dict[str, int] = {}
     leaves: List[dict] = []
+    root_style = _own_style(root)   # honour fill/stroke set on the <svg> itself
     for child in root:
-        leaves += _leaves_from(child, root_ctm, {}, ids, warns, 0)
+        leaves += _leaves_from(child, root_ctm, root_style, ids, warns, 0)
     return leaves, width_mm, height_mm, warns
 
 
