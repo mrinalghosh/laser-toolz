@@ -583,11 +583,13 @@ def load_svg(source, p: EpiParams):
     user-unit coordinate system straight to millimetres, so leaves come back
     already baked into real mm.
     """
-    if hasattr(source, "read"):
-        tree = ET.parse(source)
-        root = tree.getroot()
+    if isinstance(source, bytes):
+        root = ET.fromstring(source)                     # bytes carry their own decl
+    elif hasattr(source, "read"):
+        root = ET.parse(source).getroot()
     elif isinstance(source, str) and source.lstrip().startswith("<"):
-        root = ET.fromstring(source)
+        # strip a leading <?xml ... encoding=...?> — ET rejects it on a str
+        root = ET.fromstring(re.sub(r"^\s*<\?xml[^>]*\?>\s*", "", source, count=1))
     else:
         root = ET.parse(source).getroot()
 
