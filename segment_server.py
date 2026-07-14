@@ -278,7 +278,9 @@ _PAGE = r"""<!doctype html>
   .vec .shaft { flex:1; height:1.5px; background:var(--acc); border-radius:1px; }
   .vec .head { width:0; height:0; margin-left:-1px; border-left:6px solid var(--acc);
                border-top:4px solid transparent; border-bottom:4px solid transparent; }
-  .word { font-family:var(--mono); font-size:16px; font-weight:600; letter-spacing:-.01em; line-height:1; }
+  .word { font-family:var(--mono); font-size:16px; font-weight:600; letter-spacing:-.01em; line-height:1;
+          display:inline-flex; align-items:center; gap:5px; }
+  .word .ideo { color:var(--acc); font-weight:400; font-size:15px; line-height:1; }
   .word .thin { color:var(--mut); font-weight:400; }
   .chip { font-family:var(--mono); font-size:10px; text-transform:uppercase; letter-spacing:.14em;
           color:var(--mut); border:1px solid var(--line); border-radius:11px; padding:3px 9px; }
@@ -364,7 +366,7 @@ _PAGE = r"""<!doctype html>
 <header>
   <h1 class="brand">
     <span class="vec"><span class="shaft"></span><span class="head"></span></span>
-    <span class="word"><b>laser</b><span class="thin">·toolz</span></span>
+    <span class="word"><span class="ideo">⿴</span><b>segment</b></span>
   </h1>
   <span class="chip">segment · click-to-pick</span>
 </header>
