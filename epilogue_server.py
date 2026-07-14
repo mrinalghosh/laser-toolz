@@ -225,6 +225,16 @@ _PAGE = r"""<!doctype html>
   hr.sep { border:0; border-top:1px solid var(--line); margin:15px 0 0; }
   .err { color:var(--err); font-size:11px; margin-top:9px; min-height:0; font-family:var(--mono); line-height:1.5; }
 
+  /* "what this optimizes for" footer writeup */
+  .about { list-style:none; margin:9px 0 0; padding:0; }
+  .about li { color:var(--mut); font-size:10.5px; line-height:1.5; font-family:var(--sans);
+        margin:0 0 8px; padding-left:13px; position:relative; }
+  .about li:last-child { margin-bottom:0; }
+  .about li::before { content:"›"; position:absolute; left:0; color:var(--acc); font-weight:700; }
+  .about li b { color:var(--fg); font-weight:600; }
+  .about code { font-family:var(--mono); font-size:9.5px; color:var(--fg);
+        background:var(--faint); border:1px solid var(--line); border-radius:4px; padding:0 3px; }
+
   /* colour / operation audit */
   .aud { margin-top:2px; }
   .aud .crow { display:flex; align-items:center; gap:8px; font-family:var(--mono); font-size:11px;
@@ -253,8 +263,6 @@ _PAGE = r"""<!doctype html>
     <span class="word"><b>epilog</b><span class="thin">·ue</span></span>
   </h1>
   <span class="chip">epilogue · preflight</span>
-  <span class="grow"></span>
-  <span class="chip">Epilog-safe SVG</span>
   <!--TOOLZ-NAV-->
 </header>
 <div class="wrap">
@@ -303,6 +311,17 @@ _PAGE = r"""<!doctype html>
 
     <button id="dlBtn" class="act prim" disabled>Download Epilog-safe SVG</button>
     <div class="err" id="status"></div>
+
+    <hr class="sep">
+    <div class="grp"><h3>What this optimizes for</h3>
+      <p class="hint">Rewrites any SVG into the dialect the Epilog print driver reliably imports — the last pass before the laser:</p>
+      <ul class="about">
+        <li><b>Flatten transforms.</b> Bakes every rotate/scale into the coordinates — the driver silently drops geometry that sits under a <code>transform</code>.</li>
+        <li><b>True scale.</b> Rewrites to real millimetres so a 200&nbsp;mm design imports at 200&nbsp;mm, curing the Inkscape/Affinity 25–33% oversize bug.</li>
+        <li><b>Hairline cut invariant.</b> Collapses every path to <code>fill:none</code> + one hairline stroke, so nothing reads as a raster engrave.</li>
+        <li><b>Clean op colours.</b> Audits each colour and — with snap — rounds it to a primary that matches a Color&nbsp;Mapping row, dodging the driver's traps: pure black is reserved for the General tab, and unmatched colours silently become black.</li>
+      </ul>
+    </div>
   </div>
 
   <div class="stage">
