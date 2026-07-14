@@ -309,6 +309,11 @@ _PAGE = r"""<!doctype html>
               margin:9px 0 3px; color:var(--fg); font-size:11.5px; font-family:var(--mono); letter-spacing:-.01em; }
   label.row:first-child { margin-top:0; }
   .hint { color:var(--mut); font-size:10.5px; margin:4px 0 0; font-family:var(--sans); }
+  .blurb { color:var(--mut); font-size:11px; line-height:1.5; margin:0 0 8px; font-family:var(--sans); }
+  .blurb:last-child { margin-bottom:0; }
+  .blurb b { color:var(--fg); font-weight:600; }
+  .blurb code { font-family:var(--mono); font-size:10px; color:var(--fg);
+                background:var(--faint); border:1px solid var(--line); border-radius:4px; padding:0 4px; }
 
   input[type=text], input[type=number], select { width:100%; background:var(--field); color:var(--fg);
         border:1px solid var(--line); border-radius:6px; padding:6px 9px; font-family:var(--mono);
@@ -408,6 +413,22 @@ _PAGE = r"""<!doctype html>
       <div class="chk"><input type="checkbox" id="layers"><label for="layers">one Inkscape layer per region</label></div>
       <button id="dlBtn" class="act prim" disabled>Download SVG</button>
       <div class="err" id="status"></div>
+    </div>
+
+    <hr class="sep">
+
+    <div class="grp"><h3>How it works</h3>
+      <p class="blurb">On upload the image is encoded once by <b>MobileSAM</b> — a
+        distilled Segment Anything model — into a dense feature embedding that's
+        cached for the session.</p>
+      <p class="blurb">Each click is a <i>prompt</i>: the decoder turns your
+        include / exclude points into a probability mask over that embedding in a
+        few milliseconds, so the outline tracks your clicks live. <b>Add region</b>
+        freezes the current mask; the embedding is reused, so more picks cost nothing.</p>
+      <p class="blurb">On download each frozen mask is traced to contours,
+        simplified (<i>simplify&nbsp;mm</i>), and written as closed even-odd
+        <code>&lt;path&gt;</code> rings at true millimetre scale — one labelled
+        region each, ready for Inkscape.</p>
     </div>
   </div>
 
