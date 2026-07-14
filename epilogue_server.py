@@ -142,14 +142,35 @@ _PAGE = r"""<!doctype html>
   .grow { flex:1; }
 
   .wrap { display:flex; flex:1; min-height:0; }
-  .panel { width:322px; flex:none; border-right:1px solid var(--line); background:var(--panel);
+  .panel { width:322px; flex:none; background:var(--panel);
            overflow-y:auto; padding:16px 18px 26px; }
   .panel::-webkit-scrollbar { width:9px; }
   .panel::-webkit-scrollbar-thumb { background:var(--line); border-radius:9px; border:3px solid var(--panel); }
 
-  .stage { position:relative; flex:1; min-width:0; display:flex; align-items:center; justify-content:center;
+  /* draggable gutter between the sidebar and the stage (draws the divider hairline) */
+  .gutter { flex:none; width:9px; align-self:stretch; position:relative; z-index:5; cursor:col-resize; }
+  .gutter::after { content:""; position:absolute; top:0; bottom:0; left:50%; transform:translateX(-.5px);
+                   width:1px; background:var(--line); transition:background .12s,width .12s; }
+  .gutter:hover::after, .gutter.drag::after { background:var(--acc); width:2px; }
+  body.col-resize, body.col-resize * { cursor:col-resize !important; user-select:none !important; }
+
+  /* margin:auto centers the paper yet stays scrollable when zoomed past the stage */
+  .stage { position:relative; flex:1; min-width:0; display:flex;
            background:var(--stage); overflow:auto; padding:28px; }
+  .stage > .paper, .stage > .empty { margin:auto; }
   .paper { line-height:0; background:var(--paper); border-radius:2px; box-shadow:var(--shadow); }
+
+  /* zoom control — floats bottom-center of the stage, matches the .stat pill */
+  .zoom { position:absolute; left:50%; bottom:14px; transform:translateX(-50%); z-index:6;
+          display:none; align-items:center; gap:1px; padding:3px;
+          border:1px solid var(--line); border-radius:9px; font-family:var(--mono); font-size:11px;
+          background:color-mix(in srgb,var(--panel) 80%,transparent); backdrop-filter:blur(8px); }
+  .zoom.show { display:flex; }
+  .zoom button { border:0; background:transparent; color:var(--fg); font:inherit; cursor:pointer;
+          width:24px; height:22px; border-radius:6px; line-height:1; }
+  .zoom button:hover { background:var(--faint); }
+  .zoom .pct { width:52px; text-align:center; color:var(--mut); cursor:pointer; }
+  .zoom .pct:hover { color:var(--fg); }
   #out svg { display:block; }
   #out svg * { vector-effect:non-scaling-stroke; }         /* keep hairlines visible at any fit */
   #out.hair svg path { stroke-width:1.15px; }              /* preview-only: fatten cut strokes */
@@ -326,6 +347,7 @@ _PAGE = r"""<!doctype html>
     </div>
   </div>
 
+  <div class="gutter" id="gutter"></div>
   <div class="stage">
     <div class="seg hide" id="seg">
       <button id="segAfter" class="on">epilogued</button>
@@ -333,6 +355,11 @@ _PAGE = r"""<!doctype html>
     </div>
     <div class="paper hide" id="paper"><div id="out"></div></div>
     <div class="empty" id="empty">Upload an SVG to begin…</div>
+    <div class="zoom" id="zoom">
+      <button id="zOut" title="Zoom out">&minus;</button>
+      <button class="pct" id="zPct" title="Reset to fit">100%</button>
+      <button id="zIn" title="Zoom in">+</button>
+    </div>
     <div class="stat" id="stat"></div>
   </div>
 </div>
@@ -363,7 +390,7 @@ async function upload(f){
   if(r.error){ status(r.error); return; }
   token=r.id; original=r.svg;
   $('empty').classList.add('hide'); $('paper').classList.remove('hide'); $('seg').classList.remove('hide');
-  $('dlBtn').disabled=false; status('');
+  $('dlBtn').disabled=false; status(''); __zoom.reset();
   render();
 }
 $('drop').onclick=()=>$('file').click();
@@ -403,10 +430,15 @@ function show(svgText, isAfter){
   const el=box.querySelector('svg'); if(!el) return;
   el.style.width=el.style.height='';
   const nat=el.getBoundingClientRect();
+  // getBoundingClientRect includes the paper's CSS zoom — divide it out so the
+  // fit-to-stage math works on the svg's true size regardless of zoom level.
+  const zf=(window.__zoom&&__zoom.factor())||1;
+  const nw=(nat.width||300)/zf, nh=(nat.height||150)/zf;
   const st=$('paper').parentElement;
   const availW=st.clientWidth-72, availH=st.clientHeight-72;
-  const k=Math.min(1, availW/(nat.width||300), availH/(nat.height||150));
-  el.style.width=(nat.width*k)+'px'; el.style.height=(nat.height*k)+'px';
+  const k=Math.min(1, availW/nw, availH/nh);
+  el.style.width=(nw*k)+'px'; el.style.height=(nh*k)+'px';
+  __zoom.show();
 }
 
 function drawAudit(s){
@@ -451,6 +483,38 @@ $('dlBtn').onclick=async()=>{
   const blob=await resp.blob(); const a=document.createElement('a');
   a.href=URL.createObjectURL(blob); a.download=dlName(resp,'epilogue_cut.svg'); a.click(); status('downloaded');
 };
+
+// ---- draggable sidebar + preview zoom (shared shape across the three toolz) ----
+const __zoom = (function(){
+  const panel=document.querySelector('.panel'), gutter=$('gutter');
+  const MINW=240;
+  const saved=parseInt(localStorage.getItem('lt_panel_w')||'',10);
+  if(saved>=MINW) panel.style.width=Math.min(saved, window.innerWidth-300)+'px';
+  let dragging=false;
+  gutter.addEventListener('mousedown', e=>{ dragging=true; gutter.classList.add('drag');
+    document.body.classList.add('col-resize'); e.preventDefault(); });
+  window.addEventListener('mousemove', e=>{ if(!dragging) return;
+    const maxW=Math.min(760, window.innerWidth-300);
+    panel.style.width=Math.max(MINW, Math.min(maxW,
+      Math.round(e.clientX-panel.getBoundingClientRect().left)))+'px'; });
+  window.addEventListener('mouseup', ()=>{ if(!dragging) return; dragging=false;
+    gutter.classList.remove('drag'); document.body.classList.remove('col-resize');
+    localStorage.setItem('lt_panel_w', parseInt(panel.style.width,10)||''); });
+
+  const paper=$('paper'), box=$('zoom'), pct=$('zPct');
+  const MINZ=0.25, MAXZ=8; let z=1;
+  function apply(){ paper.style.zoom=z; pct.textContent=Math.round(z*100)+'%'; }
+  function setZoom(v){ z=Math.max(MINZ, Math.min(MAXZ,v)); apply(); }
+  $('zIn').onclick=()=>setZoom(z*1.25);
+  $('zOut').onclick=()=>setZoom(z/1.25);
+  pct.onclick=()=>setZoom(1);
+  document.querySelector('.stage').addEventListener('wheel', e=>{
+    if(!(e.ctrlKey||e.metaKey) || !box.classList.contains('show')) return;
+    e.preventDefault(); setZoom(z*(e.deltaY<0?1.1:1/1.1)); }, {passive:false});
+  return { show(){ box.classList.add('show'); },
+           reset(){ setZoom(1); box.classList.add('show'); },
+           factor(){ return z; } };
+})();
 </script></body></html>
 """
 

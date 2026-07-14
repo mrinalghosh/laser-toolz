@@ -294,17 +294,38 @@ _PAGE = r"""<!doctype html>
           color:var(--mut); border:1px solid var(--line); border-radius:11px; padding:3px 9px; }
 
   .wrap { display:flex; flex:1; min-height:0; }
-  .panel { width:320px; flex:none; border-right:1px solid var(--line); background:var(--panel);
+  .panel { width:320px; flex:none; background:var(--panel);
            overflow-y:auto; padding:16px 18px 26px; }
   .panel::-webkit-scrollbar { width:9px; }
   .panel::-webkit-scrollbar-thumb { background:var(--line); border-radius:9px; border:3px solid var(--panel); }
 
-  .stage { position:relative; flex:1; min-width:0; display:flex; align-items:center; justify-content:center;
+  /* draggable gutter between the sidebar and the stage (draws the divider hairline) */
+  .gutter { flex:none; width:9px; align-self:stretch; position:relative; z-index:5; cursor:col-resize; }
+  .gutter::after { content:""; position:absolute; top:0; bottom:0; left:50%; transform:translateX(-.5px);
+                   width:1px; background:var(--line); transition:background .12s,width .12s; }
+  .gutter:hover::after, .gutter.drag::after { background:var(--acc); width:2px; }
+  body.col-resize, body.col-resize * { cursor:col-resize !important; user-select:none !important; }
+
+  /* margin:auto centers the paper yet stays scrollable when zoomed past the stage */
+  .stage { position:relative; flex:1; min-width:0; display:flex;
            background:var(--stage); overflow:auto; padding:32px; }
+  .stage > .paper { margin:auto; }
   .paper { position:relative; line-height:0; background:var(--paper); border-radius:2px; box-shadow:var(--shadow); }
   #photo { display:block; max-width:74vw; max-height:82vh; width:auto; height:auto; }
   #overlay { position:absolute; left:0; top:0; cursor:crosshair; }
   .empty { color:var(--mut); padding:48px; font-size:12px; text-align:center; font-family:var(--mono); }
+
+  /* zoom control — floats bottom-center of the stage, matches the .stat pill */
+  .zoom { position:absolute; left:50%; bottom:14px; transform:translateX(-50%); z-index:6;
+          display:none; align-items:center; gap:1px; padding:3px;
+          border:1px solid var(--line); border-radius:9px; font-family:var(--mono); font-size:11px;
+          background:color-mix(in srgb,var(--panel) 80%,transparent); backdrop-filter:blur(8px); }
+  .zoom.show { display:flex; }
+  .zoom button { border:0; background:transparent; color:var(--fg); font:inherit; cursor:pointer;
+          width:24px; height:22px; border-radius:6px; line-height:1; }
+  .zoom button:hover { background:var(--faint); }
+  .zoom .pct { width:52px; text-align:center; color:var(--mut); cursor:pointer; }
+  .zoom .pct:hover { color:var(--fg); }
 
   /* groups — mono micro-headers with a trailing hairline rule */
   .grp { margin-top:15px; }
@@ -441,10 +462,16 @@ _PAGE = r"""<!doctype html>
     </div>
   </div>
 
+  <div class="gutter" id="gutter"></div>
   <div class="stage">
     <div class="paper" id="paper">
       <img id="photo" hidden><canvas id="overlay" hidden></canvas>
       <div class="empty" id="empty">Upload an image to begin…</div>
+    </div>
+    <div class="zoom" id="zoom">
+      <button id="zOut" title="Zoom out">&minus;</button>
+      <button class="pct" id="zPct" title="Reset to fit">100%</button>
+      <button id="zIn" title="Zoom in">+</button>
     </div>
     <div class="stat" id="stat"></div>
   </div>
@@ -466,7 +493,7 @@ async function upload(f){
   $('matchBtn').disabled=!ow;
   photo.onload=()=>{ ov.width=iw; ov.height=ih;
     ov.style.width=photo.clientWidth+'px'; ov.style.height=photo.clientHeight+'px';
-    photo.hidden=ov.hidden=false; $('empty').classList.add('hide'); draw(); };
+    photo.hidden=ov.hidden=false; $('empty').classList.add('hide'); draw(); __zoom.reset(); };
   photo.src='/image/'+token+'?t='+Date.now();
   status(''); $('stat').textContent='ready on '+r.device+' · '+iw+'×'+ih+' px — click an object';
   ['clearPts','resetBtn'].forEach(b=>$(b).disabled=false);
@@ -554,6 +581,38 @@ $('dlBtn').onclick=async()=>{
   a.href=URL.createObjectURL(blob); a.download=dlName(resp,'segment_mask.svg'); a.click();
   status(count+' regions downloaded');
 };
+
+// ---- draggable sidebar + image zoom (shared shape across the three toolz) ----
+const __zoom = (function(){
+  const panel=document.querySelector('.panel'), gutter=$('gutter');
+  const MINW=240;
+  const saved=parseInt(localStorage.getItem('lt_panel_w')||'',10);
+  if(saved>=MINW) panel.style.width=Math.min(saved, window.innerWidth-300)+'px';
+  let dragging=false;
+  gutter.addEventListener('mousedown', e=>{ dragging=true; gutter.classList.add('drag');
+    document.body.classList.add('col-resize'); e.preventDefault(); });
+  window.addEventListener('mousemove', e=>{ if(!dragging) return;
+    const maxW=Math.min(760, window.innerWidth-300);
+    panel.style.width=Math.max(MINW, Math.min(maxW,
+      Math.round(e.clientX-panel.getBoundingClientRect().left)))+'px'; });
+  window.addEventListener('mouseup', ()=>{ if(!dragging) return; dragging=false;
+    gutter.classList.remove('drag'); document.body.classList.remove('col-resize');
+    localStorage.setItem('lt_panel_w', parseInt(panel.style.width,10)||''); });
+
+  const paper=$('paper'), box=$('zoom'), pct=$('zPct');
+  const MINZ=0.25, MAXZ=8; let z=1;
+  function apply(){ paper.style.zoom=z; pct.textContent=Math.round(z*100)+'%'; }
+  function setZoom(v){ z=Math.max(MINZ, Math.min(MAXZ,v)); apply(); }
+  $('zIn').onclick=()=>setZoom(z*1.25);
+  $('zOut').onclick=()=>setZoom(z/1.25);
+  pct.onclick=()=>setZoom(1);
+  document.querySelector('.stage').addEventListener('wheel', e=>{
+    if(!(e.ctrlKey||e.metaKey) || !box.classList.contains('show')) return;
+    e.preventDefault(); setZoom(z*(e.deltaY<0?1.1:1/1.1)); }, {passive:false});
+  return { show(){ box.classList.add('show'); },
+           reset(){ setZoom(1); box.classList.add('show'); },
+           factor(){ return z; } };
+})();
 </script></body></html>
 """
 
