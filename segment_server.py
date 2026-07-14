@@ -57,7 +57,13 @@ def _get_predictor():
     if _PREDICTOR is not None:
         return _PREDICTOR
     try:
-        from mobile_sam import sam_model_registry, SamPredictor
+        import warnings
+        with warnings.catch_warnings():                    # quiet MobileSAM's import
+            warnings.filterwarnings(                       # banner: timm.models.layers/
+                "ignore", category=FutureWarning, module=r"timm\..*")  # .registry are
+            warnings.filterwarnings(                       # deprecated, and it re-registers
+                "ignore", message="Overwriting .* in registry", category=UserWarning)
+            from mobile_sam import sam_model_registry, SamPredictor
     except ImportError as exc:                              # pragma: no cover
         raise RuntimeError(
             "segment_server needs mobile_sam:\n"
