@@ -47,7 +47,7 @@ import re
 import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 # Reuse linify's mm-grid encoders so all three tools speak one coordinate
 # language: relative moves on a 0.01 mm integer grid, true-scale unit header.
@@ -74,7 +74,6 @@ class EpiParams:
     width_mm: Optional[float] = None  # force physical width (mm); None = read from file
     units: str = "mm"                 # header unit: mm | cm | in
     dpi: float = 96.0                 # px->mm assumption for unitless / px lengths
-    flatten_tol: float = 0.0          # reserved: curve flattening tol (0 = keep curves)
 
     # --- hairline normalization ---
     hairline: bool = True             # force every path to fill:none + hairline stroke
@@ -802,7 +801,7 @@ def leaves_to_svg(leaves, width_mm, height_mm, p: EpiParams) -> str:
     w, h = _fmt(width_mm), _fmt(height_mm)
     dw, dh = _fmt(width_mm / per), _fmt(height_mm / per)
     body = []
-    for i, leaf in enumerate(leaves, 1):
+    for leaf in leaves:
         d = _emit_d(leaf["subs"])
         if not d:
             continue
