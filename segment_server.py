@@ -238,49 +238,179 @@ def index():
 
 
 _PAGE = r"""<!doctype html>
-<html><head><meta charset="utf-8"><title>segment — click-to-pick masks</title>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>segment · laser-toolz</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><g fill='none' stroke='%23ff453a' stroke-width='4' stroke-linejoin='round'><path d='M6 40 L22 16 L34 34 L44 22 L58 44 L6 44 Z'/></g></svg>">
 <style>
-  :root { color-scheme: light dark; }
-  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; display: flex; height: 100vh; }
-  #side { width: 260px; padding: 16px; box-sizing: border-box; border-right: 1px solid #8884;
-          overflow-y: auto; flex: none; }
-  #main { flex: 1; overflow: auto; padding: 16px; display: flex; align-items: flex-start;
-          justify-content: center; }
-  #stage { position: relative; line-height: 0; }
-  #photo { max-width: 100%; display: block; }
-  #overlay { position: absolute; left: 0; top: 0; cursor: crosshair; }
-  h1 { font-size: 15px; margin: 0 0 12px; }
-  label { display: block; margin: 10px 0 2px; font-size: 12px; opacity: .8; }
-  input[type=number], select { width: 100%; box-sizing: border-box; }
-  button { display: block; width: 100%; margin: 6px 0; padding: 7px; cursor: pointer; }
-  .prim { background: #2d6cdf; color: #fff; border: 0; border-radius: 5px; font-weight: 600; }
-  .hint { font-size: 12px; opacity: .7; margin: 8px 0; }
-  #count { font-weight: 600; }
-</style></head>
+  :root {
+    /* dark-first (matches server.py); light block below is the override */
+    --bg:#0a0b0d; --panel:#111318; --stage:#050506; --line:#23262d;
+    --fg:#e7e9ed; --mut:#767c87; --faint:#171a20; --field:#0d0f13;
+    --acc:#ff453a; --acc-fg:#ffffff; --err:#ff6b5e; --ok:#31d158; --info:#0a84ff;
+    --paper:#f7f7f4; --shadow:0 18px 60px rgba(0,0,0,.6);
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg:#f1f1ef; --panel:#ffffff; --stage:#e6e6e3; --line:#e0e0dc;
+      --fg:#17181b; --mut:#83868d; --faint:#f5f5f3; --field:#fbfbfa;
+      --acc:#e5322a; --acc-fg:#ffffff; --err:#c0392b; --ok:#1a9e3e; --info:#0a66d6;
+      --paper:#ffffff; --shadow:0 12px 44px rgba(20,20,25,.14);
+    }
+  }
+  * { box-sizing:border-box; }
+  .hide { display:none !important; }
+  html,body { height:100%; }
+  body { margin:0; color:var(--fg); background:var(--bg); display:flex; flex-direction:column;
+         font:13px/1.5 var(--sans); -webkit-font-smoothing:antialiased; }
+
+  /* header + vector wordmark (red arrow = the "vector") */
+  header { display:flex; align-items:center; gap:12px; padding:13px 22px;
+           border-bottom:1px solid var(--line); background:var(--panel); }
+  .brand { margin:0; display:inline-flex; flex-direction:column; align-items:stretch; gap:3px; }
+  .vec { display:flex; align-items:center; height:8px; padding:0 1px; }
+  .vec .shaft { flex:1; height:1.5px; background:var(--acc); border-radius:1px; }
+  .vec .head { width:0; height:0; margin-left:-1px; border-left:6px solid var(--acc);
+               border-top:4px solid transparent; border-bottom:4px solid transparent; }
+  .word { font-family:var(--mono); font-size:16px; font-weight:600; letter-spacing:-.01em; line-height:1; }
+  .word .thin { color:var(--mut); font-weight:400; }
+  .chip { font-family:var(--mono); font-size:10px; text-transform:uppercase; letter-spacing:.14em;
+          color:var(--mut); border:1px solid var(--line); border-radius:11px; padding:3px 9px; }
+
+  .wrap { display:flex; flex:1; min-height:0; }
+  .panel { width:320px; flex:none; border-right:1px solid var(--line); background:var(--panel);
+           overflow-y:auto; padding:16px 18px 26px; }
+  .panel::-webkit-scrollbar { width:9px; }
+  .panel::-webkit-scrollbar-thumb { background:var(--line); border-radius:9px; border:3px solid var(--panel); }
+
+  .stage { position:relative; flex:1; min-width:0; display:flex; align-items:center; justify-content:center;
+           background:var(--stage); overflow:auto; padding:32px; }
+  .paper { position:relative; line-height:0; background:var(--paper); border-radius:2px; box-shadow:var(--shadow); }
+  #photo { display:block; max-width:74vw; max-height:82vh; width:auto; height:auto; }
+  #overlay { position:absolute; left:0; top:0; cursor:crosshair; }
+  .empty { color:var(--mut); padding:48px; font-size:12px; text-align:center; font-family:var(--mono); }
+
+  /* groups — mono micro-headers with a trailing hairline rule */
+  .grp { margin-top:15px; }
+  .grp:first-of-type { margin-top:2px; }
+  .grp h3 { font-family:var(--mono); font-size:10px; text-transform:uppercase; letter-spacing:.14em;
+            color:var(--mut); margin:0 0 9px; font-weight:600; display:flex; align-items:center; gap:8px; }
+  .grp h3::after { content:""; flex:1; height:1px; background:var(--line); }
+
+  label.row { display:flex; align-items:baseline; justify-content:space-between; gap:10px;
+              margin:9px 0 3px; color:var(--fg); font-size:11.5px; font-family:var(--mono); letter-spacing:-.01em; }
+  label.row:first-child { margin-top:0; }
+  .hint { color:var(--mut); font-size:10.5px; margin:4px 0 0; font-family:var(--sans); }
+
+  input[type=text], input[type=number], select { width:100%; background:var(--field); color:var(--fg);
+        border:1px solid var(--line); border-radius:6px; padding:6px 9px; font-family:var(--mono);
+        font-size:12px; outline:none; transition:border-color .12s,box-shadow .12s; }
+  select { appearance:none; cursor:pointer;
+        background-image:linear-gradient(45deg,transparent 50%,var(--mut) 50%),linear-gradient(135deg,var(--mut) 50%,transparent 50%);
+        background-position:calc(100% - 15px) 13px,calc(100% - 10px) 13px;
+        background-size:5px 5px,5px 5px; background-repeat:no-repeat; padding-right:28px; }
+  input:focus, select:focus { border-color:var(--acc);
+        box-shadow:0 0 0 3px color-mix(in srgb,var(--acc) 20%,transparent); }
+  input[type=number]::-webkit-outer-spin-button,input[type=number]::-webkit-inner-spin-button { -webkit-appearance:none; margin:0; }
+  input[type=number] { -moz-appearance:textfield; }
+
+  /* checkbox row */
+  .chk { display:flex; align-items:center; gap:9px; margin:11px 0 2px; font-size:11.5px; font-family:var(--mono); }
+  .chk input { width:15px; height:15px; accent-color:var(--acc); cursor:pointer; margin:0; }
+  .chk label { cursor:pointer; }
+
+  /* buttons: .act (secondary) + .act.prim (high-contrast) */
+  .act { width:100%; margin:7px 0 0; padding:8px 10px; border-radius:7px; border:1px solid var(--line);
+         background:var(--field); color:var(--fg); cursor:pointer; font-family:var(--mono);
+         font-size:12px; letter-spacing:.02em; transition:opacity .12s,transform .05s,border-color .12s,color .12s; }
+  .act:hover:not(:disabled) { border-color:color-mix(in srgb,var(--acc) 45%,var(--line)); color:var(--fg); }
+  .act:active:not(:disabled) { transform:translateY(1px); }
+  .act:disabled { opacity:.4; cursor:not-allowed; }
+  .act.prim { border-color:var(--fg); background:var(--fg); color:var(--bg); font-weight:600; }
+  .act.prim:hover:not(:disabled) { opacity:.88; }
+
+  .row2 { display:flex; gap:7px; }
+  .row2 .act { flex:1; }
+
+  hr.sep { border:0; border-top:1px solid var(--line); margin:15px 0 0; }
+  .err { color:var(--err); font-size:11px; margin-top:9px; min-height:14px; font-family:var(--mono); }
+  .count { font-family:var(--mono); font-variant-numeric:tabular-nums; color:var(--fg); }
+
+  /* upload dropzone — slim single-line bar with an upload glyph */
+  .drop { display:flex; align-items:center; justify-content:center; gap:9px;
+          border:1px dashed var(--line); border-radius:7px; padding:8px 12px; text-align:center;
+          color:var(--mut); cursor:pointer; font-size:11.5px; font-family:var(--mono); line-height:1.35;
+          background:var(--faint); transition:border-color .14s,background .14s,color .14s; }
+  .drop:hover { border-color:var(--mut); color:var(--fg); }
+  .drop.hot { border-color:var(--acc); color:var(--fg); background:color-mix(in srgb,var(--acc) 9%,var(--faint)); }
+  .drop .ico { flex:none; width:15px; height:15px; transition:transform .16s; }
+  .drop:hover .ico { transform:translateY(-2px); }
+
+  /* stat pill floating over the stage */
+  .stat { position:absolute; left:18px; bottom:14px; color:var(--mut); font-size:11px;
+          font-family:var(--mono); font-variant-numeric:tabular-nums; letter-spacing:.02em;
+          background:color-mix(in srgb,var(--panel) 78%,transparent); backdrop-filter:blur(8px);
+          border:1px solid var(--line); border-radius:6px; padding:5px 10px; }
+  .stat:empty { display:none; }
+</style>
+</head>
 <body>
-<div id="side">
-  <h1>segment · click-to-pick</h1>
-  <input type="file" id="file" accept="image/*">
-  <p class="hint">left-click = include · shift-click = exclude · then <b>Add region</b>.</p>
-  <button id="addBtn" class="prim" disabled>Add region</button>
-  <button id="clearPts" disabled>Clear points</button>
-  <div class="hint">regions picked: <span id="count">0</span></div>
-  <button id="undoBtn" disabled>Undo last region</button>
-  <button id="resetBtn" disabled>Reset all</button>
-  <hr>
-  <label>width (mm)</label><input type="number" id="width_mm" value="200" step="1">
-  <label>fill colour</label>
-  <select id="color"><option value="label">distinct palette</option>
-    <option value="mean">mean image colour</option><option value="gray">gray ramp</option></select>
-  <label>fill opacity</label><input type="number" id="opacity" value="1" min="0" max="1" step="0.1">
-  <label>simplify (mm)</label><input type="number" id="simplify" value="0.15" min="0" step="0.05">
-  <label><input type="checkbox" id="layers"> one Inkscape layer per region</label>
-  <button id="dlBtn" class="prim" disabled>Download SVG</button>
-  <div class="hint" id="status"></div>
+<header>
+  <h1 class="brand">
+    <span class="vec"><span class="shaft"></span><span class="head"></span></span>
+    <span class="word"><b>laser</b><span class="thin">·toolz</span></span>
+  </h1>
+  <span class="chip">segment · click-to-pick</span>
+</header>
+<div class="wrap">
+  <div class="panel">
+    <div id="drop" class="drop"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4"/><path d="M7 9l5-5 5 5"/><path d="M5 20h14"/></svg><span>Drop an image, or click to upload &nbsp;<small>PNG / JPG</small></span></div>
+    <input id="file" type="file" accept="image/*" class="hide">
+
+    <div class="grp"><h3>Pick</h3>
+      <p class="hint">Left-click = include · shift-click = exclude · then <b>Add region</b>.</p>
+      <button id="addBtn" class="act prim" disabled>Add region</button>
+      <button id="clearPts" class="act" disabled>Clear points</button>
+      <div class="hint">regions picked: <span class="count" id="count">0</span></div>
+      <div class="row2">
+        <button id="undoBtn" class="act" disabled>Undo</button>
+        <button id="resetBtn" class="act" disabled>Reset</button>
+      </div>
+    </div>
+
+    <hr class="sep">
+
+    <div class="grp"><h3>Output</h3>
+      <label class="row"><span>width (mm)</span></label>
+      <input type="number" id="width_mm" value="200" step="1">
+      <label class="row"><span>fill colour</span></label>
+      <select id="color">
+        <option value="label">distinct palette</option>
+        <option value="mean">mean image colour</option>
+        <option value="gray">gray ramp</option>
+      </select>
+      <label class="row"><span>fill opacity</span></label>
+      <input type="number" id="opacity" value="1" min="0" max="1" step="0.1">
+      <label class="row"><span>simplify (mm)</span></label>
+      <input type="number" id="simplify" value="0.15" min="0" step="0.05">
+      <div class="chk"><input type="checkbox" id="layers"><label for="layers">one Inkscape layer per region</label></div>
+      <button id="dlBtn" class="act prim" disabled>Download SVG</button>
+      <div class="err" id="status"></div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="paper" id="paper">
+      <img id="photo" hidden><canvas id="overlay" hidden></canvas>
+      <div class="empty" id="empty">Upload an image to begin…</div>
+    </div>
+    <div class="stat" id="stat"></div>
+  </div>
 </div>
-<div id="main"><div id="stage">
-  <img id="photo" hidden><canvas id="overlay" hidden></canvas>
-</div></div>
 <script>
 let token=null, iw=0, ih=0, points=[], count=0;
 const photo=document.getElementById('photo'), ov=document.getElementById('overlay');
@@ -288,19 +418,29 @@ const ctx=ov.getContext('2d');
 const $=id=>document.getElementById(id);
 const status=m=>$('status').textContent=m;
 
-$('file').onchange=async e=>{
-  const f=e.target.files[0]; if(!f) return;
+async function upload(f){
+  if(!f) return;
   status('uploading + encoding…');
   const fd=new FormData(); fd.append('image', f);
   const r=await (await fetch('/upload',{method:'POST',body:fd})).json();
   token=r.id; iw=r.w; ih=r.h; points=[]; count=0; $('count').textContent=0;
   photo.onload=()=>{ ov.width=iw; ov.height=ih;
     ov.style.width=photo.clientWidth+'px'; ov.style.height=photo.clientHeight+'px';
-    photo.hidden=ov.hidden=false; draw(); };
+    photo.hidden=ov.hidden=false; $('empty').classList.add('hide'); draw(); };
   photo.src='/image/'+token+'?t='+Date.now();
-  status('ready on '+r.device+' — click an object');
+  status(''); $('stat').textContent='ready on '+r.device+' · '+iw+'×'+ih+' px — click an object';
   ['clearPts','resetBtn'].forEach(b=>$(b).disabled=false);
-};
+}
+
+// dropzone: click to open the file picker, or drag an image onto it
+$('drop').onclick=()=>$('file').click();
+$('file').onchange=e=>upload(e.target.files[0]);
+['dragenter','dragover'].forEach(ev=>$('drop').addEventListener(ev,e=>{
+  e.preventDefault(); $('drop').classList.add('hot'); }));
+['dragleave','drop'].forEach(ev=>$('drop').addEventListener(ev,e=>{
+  e.preventDefault(); $('drop').classList.remove('hot'); }));
+$('drop').addEventListener('drop',e=>{ if(e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]); });
+
 window.addEventListener('resize',()=>{ if(token){ ov.style.width=photo.clientWidth+'px';
   ov.style.height=photo.clientHeight+'px'; }});
 
@@ -325,14 +465,14 @@ async function refresh(){
 
 function draw(polys){
   ctx.clearRect(0,0,iw,ih);
-  if(polys){ ctx.lineWidth=Math.max(2,iw/400); ctx.strokeStyle='#00e5ff';
-    ctx.fillStyle='rgba(0,229,255,.25)';
+  if(polys){ ctx.lineWidth=Math.max(2,iw/400); ctx.strokeStyle='#ff453a';
+    ctx.fillStyle='rgba(255,69,58,.20)';
     for(const poly of polys){ ctx.beginPath();
       poly.forEach((p,i)=> i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]));
       ctx.closePath(); ctx.fill(); ctx.stroke(); } }
   for(const [x,y,l] of points){ ctx.beginPath();
     ctx.arc(x,y,Math.max(3,iw/220),0,6.28);
-    ctx.fillStyle=l?'#31d158':'#ff453a'; ctx.fill();
+    ctx.fillStyle=l?'#31d158':'#0a84ff'; ctx.fill();
     ctx.lineWidth=2; ctx.strokeStyle='#fff'; ctx.stroke(); }
 }
 
