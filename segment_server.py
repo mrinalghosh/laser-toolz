@@ -126,16 +126,18 @@ def upload():
     if f is None:
         return jsonify(error="no image"), 400
     img = Image.open(io.BytesIO(f.read()))
+    orig_w, orig_h = img.size                              # ORIGINAL px (pre-resample)
     rgb, aspect = load_rgb(img, _RESAMPLE)
     token = secrets.token_urlsafe(8)
     h, w = rgb.shape[:2]
-    _SESS[token] = {"rgb": rgb, "aspect": aspect, "accepted": []}
+    _SESS[token] = {"rgb": rgb, "aspect": aspect, "orig": (orig_w, orig_h), "accepted": []}
     _NAMES[token] = os.path.splitext(os.path.basename(f.filename or "segment"))[0] or "segment"
     if len(_SESS) > 8:                                      # cap memory (embeddings are large)
         for k in list(_SESS)[:-8]:
             _SESS.pop(k, None)
             _NAMES.pop(k, None)
-    return jsonify(id=token, w=w, h=h, name=_NAMES[token], device=_get_predictor() and _DEVICE)
+    return jsonify(id=token, w=w, h=h, orig_w=orig_w, orig_h=orig_h,
+                   name=_NAMES[token], device=_get_predictor() and _DEVICE)
 
 
 @app.get("/image/<token>")
@@ -387,6 +389,10 @@ _PAGE = r"""<!doctype html>
     <div class="grp"><h3>Output</h3>
       <label class="row"><span>width (mm)</span></label>
       <input type="number" id="width_mm" value="200" step="1">
+      <button id="matchBtn" class="act" disabled>Match original image</button>
+      <p class="hint">Sizes the SVG to the photo at Inkscape's 96&nbsp;DPI, so the
+        region paths land exactly on the image when you import both — ready to use
+        as a clip / mask.</p>
       <label class="row"><span>fill colour</span></label>
       <select id="color">
         <option value="label">distinct palette</option>
@@ -412,7 +418,8 @@ _PAGE = r"""<!doctype html>
   </div>
 </div>
 <script>
-let token=null, iw=0, ih=0, points=[], count=0;
+let token=null, iw=0, ih=0, ow=0, oh=0, points=[], count=0;
+const MM_PER_PX = 25.4 / 96;   // Inkscape imports bitmaps at 96 DPI (CSS px)
 const photo=document.getElementById('photo'), ov=document.getElementById('overlay');
 const ctx=ov.getContext('2d');
 const $=id=>document.getElementById(id);
@@ -423,7 +430,8 @@ async function upload(f){
   status('uploading + encoding…');
   const fd=new FormData(); fd.append('image', f);
   const r=await (await fetch('/upload',{method:'POST',body:fd})).json();
-  token=r.id; iw=r.w; ih=r.h; points=[]; count=0; $('count').textContent=0;
+  token=r.id; iw=r.w; ih=r.h; ow=r.orig_w; oh=r.orig_h; points=[]; count=0; $('count').textContent=0;
+  $('matchBtn').disabled=!ow;
   photo.onload=()=>{ ov.width=iw; ov.height=ih;
     ov.style.width=photo.clientWidth+'px'; ov.style.height=photo.clientHeight+'px';
     photo.hidden=ov.hidden=false; $('empty').classList.add('hide'); draw(); };
@@ -476,6 +484,11 @@ function draw(polys){
     ctx.lineWidth=2; ctx.strokeStyle='#fff'; ctx.stroke(); }
 }
 
+$('matchBtn').onclick=()=>{
+  if(!ow) return;
+  $('width_mm').value=(ow*MM_PER_PX).toFixed(2);
+  status('width set to '+ow+'px @96dpi = '+(ow*MM_PER_PX).toFixed(1)+'mm');
+};
 $('clearPts').onclick=()=>{ points=[]; $('addBtn').disabled=true; draw(); status('points cleared'); };
 $('addBtn').onclick=async()=>{
   const r=await (await fetch('/add',{method:'POST',headers:{'Content-Type':'application/json'},
