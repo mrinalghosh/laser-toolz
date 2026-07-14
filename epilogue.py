@@ -76,6 +76,11 @@ class EpiParams:
     dpi: float = 96.0                 # px->mm assumption for unitless / px lengths
     flatten_tol: float = 0.0          # reserved: curve flattening tol (0 = keep curves)
 
+    # --- hairline normalization ---
+    hairline: bool = True             # force every path to fill:none + hairline stroke
+    stroke_width: str = "0.02"        # hairline width in mm (the laser ignores it anyway)
+    color: str = "#000000"            # single cut-stroke colour when hairline-normalizing
+
 
 # --------------------------------------------------------------------------- #
 # Affine matrices  (a, b, c, d, e, f)  ->  x' = a·x + c·y + e , y' = b·x + d·y + f
@@ -632,8 +637,13 @@ def _emit_d(subs) -> str:
     return "".join(out)
 
 
-def _leaf_attrs(leaf) -> str:
-    """Faithful pass-through styling (stroke/fill/width), scaled to mm."""
+def _leaf_attrs(leaf, p: EpiParams) -> str:
+    """Path styling. --hairline collapses every path to a single fill:none
+    hairline cut stroke (the laser invariant); otherwise faithful pass-through
+    of the source stroke/fill/width, scaled to mm."""
+    if p.hairline:
+        return f'fill="none" stroke="{leaf.get("color", p.color)}" ' \
+               f'stroke-width="{p.stroke_width}"'
     st = leaf["style"]
     fill = st.get("fill", "black")
     stroke = st.get("stroke", "none")
@@ -659,7 +669,7 @@ def leaves_to_svg(leaves, width_mm, height_mm, p: EpiParams) -> str:
         if not d:
             continue
         idattr = f' id="{leaf["id"]}"' if leaf.get("id") else ""
-        body.append(f'  <path{idattr} d="{d}" {_leaf_attrs(leaf)}/>')
+        body.append(f'  <path{idattr} d="{d}" {_leaf_attrs(leaf, p)}/>')
     return (
         f'<?xml version="1.0" encoding="UTF-8"?>\n'
         f'<svg xmlns="http://www.w3.org/2000/svg" version="1.1"\n'
@@ -714,11 +724,21 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--dpi", type=float, default=d.dpi,
                     help="px->mm assumption for unitless lengths "
                          "(96 modern Inkscape, 90 older, 72 Illustrator)")
+    ap.add_argument("--hairline", action=argparse.BooleanOptionalAction,
+                    default=d.hairline,
+                    help="force every path to fill:none + a hairline cut stroke "
+                         "(--no-hairline preserves the source styling)")
+    ap.add_argument("--stroke-width", default=d.stroke_width,
+                    help="hairline width in mm (default 0.02)")
+    ap.add_argument("--color", default=d.color,
+                    help="cut-stroke colour when hairline-normalizing")
     return ap
 
 
 def _params_from_args(ns) -> EpiParams:
-    return EpiParams(width_mm=ns.width_mm, units=ns.units, dpi=ns.dpi)
+    return EpiParams(width_mm=ns.width_mm, units=ns.units, dpi=ns.dpi,
+                     hairline=ns.hairline, stroke_width=ns.stroke_width,
+                     color=ns.color)
 
 
 def main(argv=None) -> int:
