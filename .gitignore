@@ -228,3 +228,6 @@ preview.png
 
 # macOS
 .DS_Store
+
+# MobileSAM checkpoint (download separately, ~40MB)
+weights/
