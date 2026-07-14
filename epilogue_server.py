@@ -23,6 +23,7 @@ import secrets
 from flask import Flask, jsonify, request, send_file
 
 from epilogue import EpiParams, svg_to_epilog
+from linify import safe_stem
 from toolz_nav import nav_html
 
 app = Flask(__name__)
@@ -67,7 +68,7 @@ def upload():
         _SVGS.pop(old, None)
         _NAMES.pop(old, None)
     _SVGS[tok] = raw
-    _NAMES[tok] = f.filename or "drawing.svg"
+    _NAMES[tok] = safe_stem(f.filename, "epilogue")
     return jsonify(id=tok, name=_NAMES[tok],
                    svg=raw.decode("utf-8", "replace"))   # raw text for before-view
 
@@ -92,9 +93,9 @@ def download():
     if raw is None:
         return jsonify(error="unknown id"), 404
     svg, _ = svg_to_epilog(raw, _params_from_json(d))
-    stem = _NAMES.get(d.get("id"), "drawing.svg").rsplit(".", 1)[0]
+    stem = _NAMES.get(d.get("id"), "epilogue")
     return send_file(io.BytesIO(svg.encode("utf-8")), mimetype="image/svg+xml",
-                     as_attachment=True, download_name=f"{stem}_epilog.svg")
+                     as_attachment=True, download_name=f"{stem}_cut.svg")
 
 
 _PAGE = r"""<!doctype html>
@@ -440,13 +441,15 @@ $('segBefore').onclick=()=>{ view='before'; $('segBefore').classList.add('on'); 
 addEventListener('resize',()=>{ if(token) show(view==='after'?lastSvg:original, view==='after'); });
 
 // ---- download ----
+// server names the file <stem>_cut.svg; honor it, don't hardcode a constant
+function dlName(resp, fb){ const m=/filename="?([^"]+)"?/.exec(resp.headers.get('Content-Disposition')||''); return m?m[1]:fb; }
 $('dlBtn').onclick=async()=>{
   if(!token) return;
   status('building…');
   const resp=await fetch('/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(params())});
   if(!resp.ok){ status('download failed'); return; }
   const blob=await resp.blob(); const a=document.createElement('a');
-  a.href=URL.createObjectURL(blob); a.download='epilog.svg'; a.click(); status('downloaded');
+  a.href=URL.createObjectURL(blob); a.download=dlName(resp,'epilogue_cut.svg'); a.click(); status('downloaded');
 };
 </script></body></html>
 """

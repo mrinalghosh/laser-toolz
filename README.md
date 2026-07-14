@@ -344,7 +344,9 @@ SVG update live, then download it. Extras beyond the CLI ergonomics:
 - **Units selector** (mm / in / cm) — set the width in your unit and the file
   exports with a matching header, so it imports at true scale in inch-only tools.
 - **Source-named downloads** — the file saves as `<input-name>_<mode>.svg`
-  (e.g. `portrait_wavy.svg`), not a generic name.
+  (e.g. `portrait_wavy.svg`), not a generic name. Every tool in the suite shares
+  the same `<input>_<tag>.svg` scheme — `_<mode>` here, `_mask` for segment,
+  `_cut` for epilogue — so a chain reads back as `portrait_wavy_cut.svg`.
 - **Advanced panel** — exposes the finer knobs (`samples`, `resample`,
   `decimate`, `stroke-width`, `freq-amount`) for granular tuning.
 - **Glyph palette import** — in `glyph` mode, an **Import JSON…** button loads a
@@ -387,9 +389,12 @@ curl -L -o weights/mobile_sam.pt \
 **CLI — automatic "segment everything":**
 
 ```bash
-python segment.py photo.jpg -o mask.svg
+python segment.py photo.jpg                                    # -> photo_mask.svg
 python segment.py photo.jpg -o mask.svg --color mean --max-regions 40 --layers
 ```
+
+`-o` is optional — omit it and the file auto-names `<input>_mask.svg` next to the
+source (pass `-o -` for stdout).
 
 Each region becomes a separately selectable object in Inkscape's Objects panel
 (`id` + `inkscape:label`, plus `data-area-mm2` / `data-iou`), under a single
@@ -448,10 +453,13 @@ straight to mm). Basic shapes, arcs, and quadratics are reduced to line/cubic
 paths; `<use>` is resolved; output uses linify's compact 0.01 mm grid.
 
 ```bash
-python epilogue.py drawing.svg -o cut.svg                 # flatten + true scale
+python epilogue.py drawing.svg                            # flatten -> drawing_cut.svg
 python epilogue.py drawing.svg -o cut.svg --width-mm 200  # force physical width
 python epilogue.py old.svg     -o cut.svg --dpi 90        # old-Inkscape px files
 ```
+
+Like the other tools, `-o` is optional — omitting it writes `<input>_cut.svg`
+beside the source (pass `-o -` for stdout).
 
 By default every path is normalized to the laser invariant — `fill:none` + a
 single `0.02mm` hairline cut stroke — so nothing is mistaken for a raster

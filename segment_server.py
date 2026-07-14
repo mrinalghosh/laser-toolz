@@ -32,6 +32,7 @@ from flask import Flask, jsonify, request, send_file
 from PIL import Image
 
 from toolz_nav import nav_html
+from linify import safe_stem
 from segment import (
     SegParams, load_rgb, mask_to_rings, region_colors, regions_to_svg,
     _DEFAULT_CHECKPOINT, _pick_device,
@@ -138,7 +139,7 @@ def upload():
     token = secrets.token_urlsafe(8)
     h, w = rgb.shape[:2]
     _SESS[token] = {"rgb": rgb, "aspect": aspect, "orig": (orig_w, orig_h), "accepted": []}
-    _NAMES[token] = os.path.splitext(os.path.basename(f.filename or "segment"))[0] or "segment"
+    _NAMES[token] = safe_stem(f.filename, "segment")
     if len(_SESS) > 8:                                      # cap memory (embeddings are large)
         for k in list(_SESS)[:-8]:
             _SESS.pop(k, None)
@@ -238,7 +239,7 @@ def download():
     buf.seek(0)
     stem = _NAMES.get(data["id"], "segment")
     return send_file(buf, mimetype="image/svg+xml", as_attachment=True,
-                     download_name=f"{stem}_seg.svg")
+                     download_name=f"{stem}_mask.svg")
 
 
 @app.get("/")
@@ -540,6 +541,8 @@ $('resetBtn').onclick=async()=>{
   count=0; points=[]; $('count').textContent=0; draw();
   ['undoBtn','dlBtn','addBtn'].forEach(b=>$(b).disabled=true); status('reset');
 };
+// server names the file <stem>_mask.svg; honor it, don't hardcode a constant
+function dlName(resp, fb){ const m=/filename="?([^"]+)"?/.exec(resp.headers.get('Content-Disposition')||''); return m?m[1]:fb; }
 $('dlBtn').onclick=async()=>{
   status('building SVG…');
   const body={id:token, width_mm:+$('width_mm').value, color:$('color').value,
@@ -548,7 +551,7 @@ $('dlBtn').onclick=async()=>{
     body:JSON.stringify(body)});
   if(!resp.ok){ status('download failed'); return; }
   const blob=await resp.blob(); const a=document.createElement('a');
-  a.href=URL.createObjectURL(blob); a.download='segment_seg.svg'; a.click();
+  a.href=URL.createObjectURL(blob); a.download=dlName(resp,'segment_mask.svg'); a.click();
   status(count+' regions downloaded');
 };
 </script></body></html>

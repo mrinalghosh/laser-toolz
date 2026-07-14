@@ -14,7 +14,6 @@ Run:
 from __future__ import annotations
 
 import io
-import re
 import logging
 import os.path
 import uuid
@@ -23,7 +22,7 @@ from dataclasses import fields
 from flask import Flask, jsonify, request, Response
 from PIL import Image, UnidentifiedImageError
 
-from linify import Params, image_to_svg
+from linify import Params, image_to_svg, safe_stem
 from toolz_nav import nav_html
 
 app = Flask(__name__)
@@ -47,13 +46,6 @@ _STR_FIELDS = {"mode", "color", "units", "spacing_style", "fill_style",
                "smooth_mode", "contour_source", "glyph_palette", "glyph_chars",
                "glyph_font"}
 _FLOAT_FIELDS = {f.name for f in fields(Params)} - _BOOL_FIELDS - _INT_FIELDS - _STR_FIELDS
-
-
-def _safe_stem(filename: str) -> str:
-    """Filesystem-safe stem of an uploaded filename (no path, no odd chars)."""
-    stem = os.path.splitext(os.path.basename(filename or ""))[0]
-    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-")
-    return stem or "linify"
 
 
 def _params_from_json(data: dict) -> Params:
@@ -95,7 +87,7 @@ def upload():
         return jsonify(error=f"couldn't read '{name}' — not a valid image file"), 400
     token = uuid.uuid4().hex
     _IMAGES[token] = img
-    _NAMES[token] = _safe_stem(upload.filename)
+    _NAMES[token] = safe_stem(upload.filename, "linify")
     # keep the stores from growing unbounded across a long session
     if len(_IMAGES) > 24:
         for k in list(_IMAGES)[:-24]:

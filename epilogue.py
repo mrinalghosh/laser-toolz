@@ -51,7 +51,7 @@ from typing import Dict, List, Optional
 
 # Reuse linify's mm-grid encoders so all three tools speak one coordinate
 # language: relative moves on a 0.01 mm integer grid, true-scale unit header.
-from linify import _MM_PER_UNIT, _fmt, _num, _Q
+from linify import _MM_PER_UNIT, _fmt, _num, _Q, default_output_path
 
 _SVG_NS = "http://www.w3.org/2000/svg"
 _XLINK_NS = "http://www.w3.org/1999/xlink"
@@ -857,7 +857,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="Flatten transforms and fix true scale so an SVG imports "
                     "cleanly into the Epilog print driver.")
     ap.add_argument("input", help="input .svg (from Inkscape / Affinity / etc.)")
-    ap.add_argument("-o", "--output", help="output .svg (default: stdout)")
+    ap.add_argument("-o", "--output",
+                    help="output .svg (default: <input>_cut.svg next to the "
+                         "input; pass '-' for stdout)")
     ap.add_argument("--width-mm", type=float, default=d.width_mm,
                     help="force physical width in mm (height keeps aspect); "
                          "use this when the file's declared size is wrong")
@@ -906,14 +908,15 @@ def main(argv=None) -> int:
     for msg in stats["color_warnings"]:
         print(f"warning: {msg}", file=sys.stderr)
 
-    if ns.output:
-        with open(ns.output, "w") as fh:
+    out = ns.output or default_output_path(ns.input, "cut")
+    if out == "-":
+        sys.stdout.write(svg)
+    else:
+        with open(out, "w") as fh:
             fh.write(svg)
         w = warn_summary(stats["warnings"])
-        print(f"wrote {ns.output}  {stats['width_mm']}x{stats['height_mm']}mm  "
+        print(f"wrote {out}  {stats['width_mm']}x{stats['height_mm']}mm  "
               f"{stats['paths']} paths / {stats['points']} pts{w}", file=sys.stderr)
-    else:
-        sys.stdout.write(svg)
     return 0
 
 

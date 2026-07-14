@@ -39,7 +39,7 @@ from PIL import Image
 
 # Reuse linify's mm-grid path encoders so both tools speak the same coordinate
 # language (relative moves on a 0.01 mm integer grid, true-scale unit header).
-from linify import _MM_PER_UNIT, _fmt, _num, _pair, rdp
+from linify import _MM_PER_UNIT, _fmt, _num, _pair, default_output_path, rdp
 
 _DEFAULT_CHECKPOINT = os.path.join(os.path.dirname(__file__), "weights", "mobile_sam.pt")
 
@@ -410,7 +410,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         description="Convert an image into an editable segmentation-mask SVG (MobileSAM).")
     ap.add_argument("input", help="input raster image")
-    ap.add_argument("-o", "--output", required=True, help="output .svg path")
+    ap.add_argument("-o", "--output",
+                    help="output .svg path (default: <input>_mask.svg next to "
+                         "the input; pass '-' for stdout)")
 
     ap.add_argument("--width-mm", type=float, default=d.width_mm, help="physical width (mm)")
     ap.add_argument("--units", default=d.units, choices=list(_MM_PER_UNIT), help="header unit")
@@ -453,11 +455,15 @@ def main(argv=None) -> int:
         color=args.color, opacity=args.opacity, stroke=args.stroke, layers=args.layers,
     )
     svg, stats = image_to_segmentation_svg(args.input, p)
-    with open(args.output, "w") as f:
-        f.write(svg)
-    print(f"[segment] {stats['regions']} regions, {stats['points']} points, "
-          f"{stats['width_mm']}×{stats['height_mm']}mm, device={stats['device']} "
-          f"→ {args.output}", file=sys.stderr)
+    out = args.output or default_output_path(args.input, "mask")
+    if out == "-":
+        sys.stdout.write(svg)
+    else:
+        with open(out, "w") as f:
+            f.write(svg)
+        print(f"[segment] {stats['regions']} regions, {stats['points']} points, "
+              f"{stats['width_mm']}×{stats['height_mm']}mm, device={stats['device']} "
+              f"→ {out}", file=sys.stderr)
     return 0
 
 

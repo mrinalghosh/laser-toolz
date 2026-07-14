@@ -27,6 +27,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
+import re
 import sys
 from dataclasses import dataclass, fields
 from typing import List, Optional
@@ -1342,6 +1344,26 @@ def image_to_svg(source, p: Params):
 
 
 # --------------------------------------------------------------------------- #
+# Output naming — shared by every CLI and web server in the family so the same
+# input yields `<stem>_<tag>.svg` everywhere (tag = mode / "mask" / "cut").
+# --------------------------------------------------------------------------- #
+def safe_stem(filename: str, fallback: str = "output") -> str:
+    """Filesystem-safe stem of a path/filename: no directory, no extension,
+    unsafe characters collapsed to '_'. Empty result falls back to `fallback`."""
+    stem = os.path.splitext(os.path.basename(filename or ""))[0]
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-")
+    return stem or fallback
+
+
+def default_output_path(input_path: str, tag: str) -> str:
+    """`<stem>_<tag>.svg` next to the input — the CLI's output when -o is
+    omitted. Callers pass ``-o -`` to force stdout instead."""
+    name = f"{safe_stem(input_path, 'output')}_{tag}.svg"
+    d = os.path.dirname(input_path)
+    return os.path.join(d, name) if d else name
+
+
+# --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
 def build_parser() -> argparse.ArgumentParser:
@@ -1352,7 +1374,9 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     ap.add_argument("input", help="input raster image (PNG/JPG/...)")
-    ap.add_argument("-o", "--output", help="output SVG path (default: stdout)")
+    ap.add_argument("-o", "--output",
+                    help="output SVG path (default: <input>_<mode>.svg next to "
+                         "the input; pass '-' for stdout)")
     ap.add_argument("--mode", choices=list(_MODES), default=d.mode,
                     help="render mode")
 
@@ -1509,17 +1533,18 @@ def main(argv=None) -> int:
         print(f"error: input not found: {ns.input}", file=sys.stderr)
         return 1
 
-    if ns.output:
-        with open(ns.output, "w") as fh:
+    out = ns.output or default_output_path(ns.input, p.mode)
+    if out == "-":
+        sys.stdout.write(svg)
+    else:
+        with open(out, "w") as fh:
             fh.write(svg)
         print(
-            f"wrote {ns.output}  [{stats['mode']}]  "
+            f"wrote {out}  [{stats['mode']}]  "
             f"{stats['width_mm']}x{stats['height_mm']}mm  "
             f"{stats['paths']} paths / {stats['points']} pts",
             file=sys.stderr,
         )
-    else:
-        sys.stdout.write(svg)
     return 0
 
 
