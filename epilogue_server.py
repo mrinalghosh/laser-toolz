@@ -194,7 +194,8 @@ _PAGE = r"""<!doctype html>
   .chk { display:flex; align-items:center; gap:9px; margin:12px 0 2px; font-size:11.5px; font-family:var(--mono); }
   .sw { position:relative; width:32px; height:18px; flex:none; }
   .sw input { position:absolute; opacity:0; width:100%; height:100%; margin:0; cursor:pointer; }
-  .sw .tr { position:absolute; inset:0; background:var(--line); border-radius:9px; transition:background .14s; }
+  .sw .tr { position:absolute; inset:0; background:var(--line); border-radius:9px; transition:background .14s;
+        pointer-events:none; }   /* let clicks fall through to the <input> beneath, else the track eats them */
   .sw .tr::after { content:""; position:absolute; left:2px; top:2px; width:14px; height:14px; border-radius:50%;
         background:var(--paper); transition:transform .14s; }
   .sw input:checked + .tr { background:var(--acc); }
