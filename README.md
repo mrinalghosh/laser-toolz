@@ -484,6 +484,22 @@ python epilogue_server.py           # -> http://127.0.0.1:5003
 PORT=8080 python epilogue_server.py
 ```
 
+## Launch every web UI with one command
+
+`toolz.py` boots all three Flask frontends together — each stays on its own
+port, its logs prefixed by tool name, and a single Ctrl-C (or `kill`) tears the
+whole set down. If one server can't start (missing dep, port in use) the others
+keep serving. Every page also grows a small nav in its header linking the other
+two, so you can switch tools on demand; the links track any port overrides (and
+still work when a server is launched on its own, falling back to the defaults).
+
+```bash
+python toolz.py                     # linify :5001 · segment :5002 · epilogue :5003
+python toolz.py segment epilogue    # just a subset (any order)
+python toolz.py linify=8080         # override a port
+python toolz.py --list              # show the tools and exit
+```
+
 ## Files
 
 - `linify.py` — the CLI (and importable rendering API: `image_to_svg(src, Params)`).
@@ -492,5 +508,7 @@ PORT=8080 python epilogue_server.py
 - `segment_server.py` — the interactive click-to-pick web UI for segment.
 - `epilogue.py` — the Epilog-safe SVG preflight CLI (`svg_to_epilog(src, EpiParams)`).
 - `epilogue_server.py` — the live-preview web UI for epilogue.
+- `toolz.py` — one-command launcher that boots all three web UIs together.
+- `toolz_nav.py` — the shared header nav that lets the three UIs link to each other.
 - `sample.png` — a synthetic test portrait used by the examples above.
 ```

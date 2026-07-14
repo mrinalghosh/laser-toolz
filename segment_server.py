@@ -31,6 +31,7 @@ import numpy as np
 from flask import Flask, jsonify, request, send_file
 from PIL import Image
 
+from toolz_nav import nav_html
 from segment import (
     SegParams, load_rgb, mask_to_rings, region_colors, regions_to_svg,
     _DEFAULT_CHECKPOINT, _pick_device,
@@ -242,7 +243,7 @@ def download():
 
 @app.get("/")
 def index():
-    return _PAGE
+    return _PAGE.replace("<!--TOOLZ-NAV-->", nav_html("segment"))
 
 
 _PAGE = r"""<!doctype html>
@@ -380,6 +381,7 @@ _PAGE = r"""<!doctype html>
     <span class="word"><span class="ideo">⿴</span><b>segment</b></span>
   </h1>
   <span class="chip">segment · click-to-pick</span>
+  <!--TOOLZ-NAV-->
 </header>
 <div class="wrap">
   <div class="panel">

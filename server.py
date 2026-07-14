@@ -24,6 +24,7 @@ from flask import Flask, jsonify, request, Response
 from PIL import Image, UnidentifiedImageError
 
 from linify import Params, image_to_svg
+from toolz_nav import nav_html
 
 app = Flask(__name__)
 
@@ -140,7 +141,8 @@ def download():
 
 @app.get("/")
 def index():
-    return Response(_PAGE, mimetype="text/html")
+    return Response(_PAGE.replace("<!--TOOLZ-NAV-->", nav_html("linify")),
+                    mimetype="text/html")
 
 
 _PAGE = r"""<!doctype html>
@@ -388,6 +390,7 @@ _PAGE = r"""<!doctype html>
     <span class="vec"><span class="shaft"></span><span class="head"></span></span>
     <span class="word"><b>laser</b><span class="thin">·toolz</span></span>
   </h1>
+  <!--TOOLZ-NAV-->
 </header>
 <div class="wrap">
   <div class="panel">

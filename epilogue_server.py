@@ -23,6 +23,7 @@ import secrets
 from flask import Flask, jsonify, request, send_file
 
 from epilogue import EpiParams, svg_to_epilog
+from toolz_nav import nav_html
 
 app = Flask(__name__)
 
@@ -51,7 +52,7 @@ def _params_from_json(d) -> EpiParams:
 
 @app.route("/")
 def index():
-    return _PAGE
+    return _PAGE.replace("<!--TOOLZ-NAV-->", nav_html("epilogue"))
 
 
 @app.post("/upload")
@@ -254,6 +255,7 @@ _PAGE = r"""<!doctype html>
   <span class="chip">epilogue · preflight</span>
   <span class="grow"></span>
   <span class="chip">Epilog-safe SVG</span>
+  <!--TOOLZ-NAV-->
 </header>
 <div class="wrap">
   <div class="panel">
