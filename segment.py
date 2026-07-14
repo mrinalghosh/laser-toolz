@@ -64,6 +64,7 @@ class SegParams:
     stability_thresh: float = 0.92   # drop unstable masks
     min_area: float = 0.002          # drop masks smaller than this fraction of the image
     max_regions: int = 0             # keep only the N largest (0 = all)
+    dedup_iou: float = 0.7           # drop a mask if IoU with a larger kept one exceeds this (0 = off)
 
     # --- vectorization ---
     simplify: float = 0.15           # contour decimation tolerance in mm (RDP)
@@ -108,6 +109,43 @@ def _pick_device(pref: str):
     # feeds float64 point tensors, which MPS rejects. Pass --device mps to try
     # anyway (it will fall back to CPU on the first float64 op).
     return "cpu"
+
+
+def _dedup_masks(masks: List[dict], thresh: float) -> List[dict]:
+    """Drop masks that near-duplicate a larger kept one (IoU > thresh).
+
+    SAM's automatic generator emits nested masks — e.g. a whole shape AND a
+    sub-part of it. Walking large→small and rejecting any mask whose IoU with an
+    already-kept mask exceeds `thresh` keeps the most complete version of each
+    region while discarding the redundant fragments. A bbox overlap pre-check
+    skips the pixel intersection for the common disjoint case.
+    """
+    if thresh <= 0 or not masks:
+        return masks
+    kept: List[dict] = []
+    kept_bool: List[np.ndarray] = []
+    kept_box: List[Tuple[int, int, int, int]] = []
+    for m in masks:                                        # already sorted large→small
+        seg = m["segmentation"]
+        x, y, w, h = (int(v) for v in m["bbox"])          # SAM bbox: x,y,w,h
+        bx0, by0, bx1, by1 = x, y, x + w, y + h
+        area = int(seg.sum())
+        dup = False
+        for k, kb, (kx0, ky0, kx1, ky1) in zip(kept, kept_bool, kept_box):
+            if bx1 <= kx0 or kx1 <= bx0 or by1 <= ky0 or ky1 <= by0:
+                continue                                   # bboxes disjoint → IoU 0
+            inter = int(np.logical_and(seg, kb).sum())
+            if inter == 0:
+                continue
+            union = area + int(k["area"]) - inter
+            if union and inter / union > thresh:
+                dup = True
+                break
+        if not dup:
+            kept.append(m)
+            kept_bool.append(seg)
+            kept_box.append((bx0, by0, bx1, by1))
+    return kept
 
 
 def generate_masks(rgb: np.ndarray, p: SegParams) -> Tuple[List[dict], str]:
@@ -164,7 +202,14 @@ def generate_masks(rgb: np.ndarray, p: SegParams) -> Tuple[List[dict], str]:
 
     masks = [m for m in masks if m["area"] >= min_region_px]
     masks.sort(key=lambda m: m["area"], reverse=True)
-    if p.max_regions > 0:
+    n_raw = len(masks)
+    masks = _dedup_masks(masks, p.dedup_iou)
+    if n_raw != len(masks):
+        print(f"[segment] dedup dropped {n_raw - len(masks)} overlapping "
+              f"mask(s) (IoU > {p.dedup_iou})", file=sys.stderr)
+    if p.max_regions > 0 and len(masks) > p.max_regions:
+        print(f"[segment] keeping {p.max_regions} largest of {len(masks)} regions",
+              file=sys.stderr)
         masks = masks[:p.max_regions]
     return masks, device
 
@@ -375,6 +420,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="drop regions below this fraction of image area")
     ap.add_argument("--max-regions", type=int, default=d.max_regions,
                     help="keep only the N largest regions (0 = all)")
+    ap.add_argument("--dedup-iou", type=float, default=d.dedup_iou,
+                    help="drop a mask if IoU with a larger kept one exceeds this (0 = off)")
 
     ap.add_argument("--simplify", type=float, default=d.simplify, help="RDP tolerance (mm)")
     ap.add_argument("--smooth-px", type=int, default=d.smooth_px, help="mask de-noise radius (px)")
@@ -395,7 +442,8 @@ def main(argv=None) -> int:
         checkpoint=args.checkpoint, device=args.device,
         points_per_side=args.points_per_side, iou_thresh=args.iou_thresh,
         stability_thresh=args.stability_thresh, min_area=args.min_area,
-        max_regions=args.max_regions, simplify=args.simplify, smooth_px=args.smooth_px,
+        max_regions=args.max_regions, dedup_iou=args.dedup_iou,
+        simplify=args.simplify, smooth_px=args.smooth_px,
         color=args.color, opacity=args.opacity, stroke=args.stroke, layers=args.layers,
     )
     svg, stats = image_to_segmentation_svg(args.input, p)
