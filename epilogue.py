@@ -281,7 +281,8 @@ def _parse_path_d(d: str):
             if cur:
                 cur["closed"] = True
                 cx, cy = sx, sy
-            pcx = pqx = None
+                cur = None          # a draw command after Z starts a fresh
+            pcx = pqx = None        # subpath at the point Z closed back to
             continue
         if C == "M":
             x = read_num(); y = read_num()
