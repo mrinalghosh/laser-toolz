@@ -81,6 +81,9 @@ class EpiParams:
     stroke_width: str = "0.02"        # hairline width in mm (the laser ignores it anyway)
     color: str = "#000000"            # single cut-stroke colour when hairline-normalizing
 
+    # --- colour audit / operation mapping ---
+    snap_colors: bool = False         # snap each op colour to a clean, exact primary
+
 
 # --------------------------------------------------------------------------- #
 # Affine matrices  (a, b, c, d, e, f)  ->  x' = a·x + c·y + e , y' = b·x + d·y + f
@@ -597,6 +600,106 @@ def load_svg(source, p: EpiParams):
 
 
 # --------------------------------------------------------------------------- #
+# Colour audit + operation mapping
+# --------------------------------------------------------------------------- #
+# The Epilog driver runs one cut/score/engrave op per DISTINCT colour listed in
+# its Color Mapping tab, matched by EXACT RGB. Two traps: (1) pure black is
+# reserved — it always uses the General tab, never a map entry; (2) any colour
+# that doesn't exactly match a map row is silently treated as black. So a file
+# meant to have several ops needs a few clean, exact, non-black colours. --snap
+# rounds every source colour to the nearest of these easy-to-enter primaries so
+# each op is an exact RGB you can type into the map; the audit flags the traps.
+_CANON = {
+    "#ff0000": "red", "#00ff00": "green", "#0000ff": "blue",
+    "#00ffff": "cyan", "#ff00ff": "magenta", "#ffff00": "yellow",
+    "#ff8000": "orange", "#8000ff": "violet",
+    "#000000": "black", "#ffffff": "white",
+}
+_NAMED = {
+    "black": "#000000", "white": "#ffffff", "red": "#ff0000",
+    "green": "#008000", "lime": "#00ff00", "blue": "#0000ff",
+    "yellow": "#ffff00", "cyan": "#00ffff", "aqua": "#00ffff",
+    "magenta": "#ff00ff", "fuchsia": "#ff00ff", "orange": "#ffa500",
+    "gray": "#808080", "grey": "#808080", "none": "none", "transparent": "none",
+}
+
+
+def _norm_color(s: Optional[str]) -> Optional[str]:
+    """Normalize a CSS colour to '#rrggbb' (or 'none'); None if unparseable."""
+    if not s:
+        return None
+    s = s.strip().lower()
+    if s in _NAMED:
+        return _NAMED[s]
+    if s.startswith("#"):
+        h = s[1:]
+        if len(h) == 3:
+            h = "".join(c * 2 for c in h)
+        if len(h) == 6 and all(c in "0123456789abcdef" for c in h):
+            return "#" + h
+        return None
+    m = re.match(r"rgba?\(([^)]*)\)", s)
+    if m:
+        parts = re.split(r"[\s,]+", m.group(1).strip())[:3]
+        try:
+            rgb = [int(round(float(v[:-1]) * 2.55)) if v.endswith("%") else int(float(v))
+                   for v in parts]
+            return "#" + "".join(f"{max(0, min(255, c)):02x}" for c in rgb)
+        except ValueError:
+            return None
+    return None
+
+
+def _source_color(style: Dict[str, str]) -> str:
+    """The colour that identifies a path's intended operation: its stroke if it
+    has one, else its fill, else black (SVG's default fill)."""
+    stroke = _norm_color(style.get("stroke"))
+    if stroke and stroke != "none":
+        return stroke
+    fill = _norm_color(style.get("fill", "black"))
+    return fill if fill and fill != "none" else "#000000"
+
+
+def _snap_color(hexc: str) -> str:
+    r, g, b = (int(hexc[i:i + 2], 16) for i in (1, 3, 5))
+    return min(_CANON, key=lambda c: (int(c[1:3], 16) - r) ** 2
+               + (int(c[3:5], 16) - g) ** 2 + (int(c[5:7], 16) - b) ** 2)
+
+
+def analyze_colors(leaves, p: EpiParams):
+    """Tally source colours per op, optionally snapping each leaf to a clean
+    primary. Returns (rows, warnings): rows is [{src, out, count}], warnings is
+    a list of human-readable Epilog colour-map gotchas."""
+    rows: Dict[str, dict] = {}
+    for leaf in leaves:
+        src = _source_color(leaf["style"])
+        out = _snap_color(src) if p.snap_colors else src
+        if p.snap_colors:
+            leaf["color"] = out
+        r = rows.setdefault(src, {"src": src, "out": out, "count": 0})
+        r["count"] += 1
+    report = sorted(rows.values(), key=lambda r: -r["count"])
+    outs = {r["out"] for r in report}
+
+    warnings: List[str] = []
+    if p.hairline and not p.snap_colors and len(rows) > 1:
+        warnings.append(f"{len(rows)} distinct source colours were flattened to "
+                        "a single cut stroke — use --snap (or --no-hairline) to "
+                        "keep them as separate cut/score/engrave ops")
+    if "#000000" in outs and len(outs) > 1:
+        warnings.append("pure black is used alongside other colours — the "
+                        "Epilog driver reserves black for the General tab, so "
+                        "that op can't have its own Color Mapping row")
+    if not p.snap_colors:
+        muddy = sorted(o for o in outs if o not in _CANON and o != "none")
+        if muddy:
+            warnings.append("non-primary colours won't match a Color Mapping "
+                            "row exactly and fall back to black: "
+                            + ", ".join(muddy) + " — try --snap")
+    return report, warnings
+
+
+# --------------------------------------------------------------------------- #
 # Emit  (relative 0.01 mm grid, same convention as linify)
 # --------------------------------------------------------------------------- #
 def _coords(nums):
@@ -690,6 +793,7 @@ def svg_to_epilog(source, p: EpiParams):
     if p.units not in _MM_PER_UNIT:
         raise ValueError(f"unknown units {p.units!r}; choose from {list(_MM_PER_UNIT)}")
     leaves, width_mm, height_mm, warns = load_svg(source, p)
+    colors, color_warnings = analyze_colors(leaves, p)   # may set leaf["color"]
     svg = leaves_to_svg(leaves, width_mm, height_mm, p)
     per = _MM_PER_UNIT.get(p.units, 1.0)
     n_pts = sum(1 + len(sp["segs"]) for lf in leaves for sp in lf["subs"])
@@ -702,6 +806,8 @@ def svg_to_epilog(source, p: EpiParams):
         "paths": len(leaves),
         "points": n_pts,
         "warnings": warns,
+        "colors": colors,
+        "color_warnings": color_warnings,
     }
     return svg, stats
 
@@ -732,13 +838,19 @@ def build_parser() -> argparse.ArgumentParser:
                     help="hairline width in mm (default 0.02)")
     ap.add_argument("--color", default=d.color,
                     help="cut-stroke colour when hairline-normalizing")
+    ap.add_argument("--snap", dest="snap_colors", action="store_true",
+                    default=d.snap_colors,
+                    help="snap each operation's colour to the nearest clean "
+                         "primary so it matches an Epilog Color Mapping row exactly")
+    ap.add_argument("--report", action="store_true",
+                    help="print a colour / operation audit to stderr")
     return ap
 
 
 def _params_from_args(ns) -> EpiParams:
     return EpiParams(width_mm=ns.width_mm, units=ns.units, dpi=ns.dpi,
                      hairline=ns.hairline, stroke_width=ns.stroke_width,
-                     color=ns.color)
+                     color=ns.color, snap_colors=ns.snap_colors)
 
 
 def main(argv=None) -> int:
@@ -753,6 +865,11 @@ def main(argv=None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
+    if ns.report:
+        _print_report(stats)
+    for msg in stats["color_warnings"]:
+        print(f"warning: {msg}", file=sys.stderr)
+
     if ns.output:
         with open(ns.output, "w") as fh:
             fh.write(svg)
@@ -762,6 +879,16 @@ def main(argv=None) -> int:
     else:
         sys.stdout.write(svg)
     return 0
+
+
+def _print_report(stats) -> None:
+    rows = stats["colors"]
+    print(f"— colour / operation audit ({len(rows)} distinct) —", file=sys.stderr)
+    for r in rows:
+        name = _CANON.get(r["out"], "")
+        arrow = f" -> {r['out']} {name}".rstrip() if r["out"] != r["src"] else ""
+        note = "  [reserved: General tab]" if r["out"] == "#000000" else ""
+        print(f"  {r['count']:4d}x  {r['src']}{arrow}{note}", file=sys.stderr)
 
 
 def warn_summary(warns: Dict[str, int]) -> str:
