@@ -473,6 +473,17 @@ python epilogue.py multi.svg -o cut.svg --snap            # clean them to exact 
 `<style>` block are not handled — they're warned about and skipped (inline
 `style=` and presentation attributes *are* read).
 
+**Web UI** (`epilogue_server.py`): since epilogue is instant, the preview
+re-renders live as you flip toggles. Drop an SVG and every option is a
+tooltip-annotated toggle/field; a before/after switch compares the raw upload
+against the flattened result, and a colour audit panel lists each op colour,
+snap remaps, and reserved-black warnings.
+
+```bash
+python epilogue_server.py           # -> http://127.0.0.1:5003
+PORT=8080 python epilogue_server.py
+```
+
 ## Files
 
 - `linify.py` — the CLI (and importable rendering API: `image_to_svg(src, Params)`).
@@ -480,5 +491,6 @@ python epilogue.py multi.svg -o cut.svg --snap            # clean them to exact 
 - `segment.py` — the segmentation-mask CLI (MobileSAM → filled region SVG).
 - `segment_server.py` — the interactive click-to-pick web UI for segment.
 - `epilogue.py` — the Epilog-safe SVG preflight CLI (`svg_to_epilog(src, EpiParams)`).
+- `epilogue_server.py` — the live-preview web UI for epilogue.
 - `sample.png` — a synthetic test portrait used by the examples above.
 ```
