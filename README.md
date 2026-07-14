@@ -360,9 +360,76 @@ PORT=8080 python server.py       # override the port if you like
 > On macOS, port 5000 is taken by the AirPlay Receiver (it returns 403 and looks
 > like a crash), so the server defaults to **5001**.
 
+## segment — image → editable segmentation-mask SVG
+
+A **sibling tool** to linify that does the opposite thing on purpose: instead of
+hairline line art, it produces **filled, multi-colour region shapes** you can
+drop straight into Inkscape and edit by hand. It uses
+[MobileSAM](https://github.com/ChaoningZhang/MobileSAM) (a ~40 MB distilled
+Segment Anything model) to find objects, traces each mask to a vector contour,
+and writes one labelled `<path>` per region.
+
+> This deliberately breaks linify's laser invariant (`fill:none`, one colour,
+> tone-by-geometry) — which is exactly why it lives in its own file rather than
+> as a linify `--mode`. It reuses linify's mm-grid path encoders, so output still
+> imports at true physical scale.
+
+**Install** (heavier than linify — pulls in PyTorch):
+
+```bash
+pip install torch torchvision opencv-python timm flask
+pip install git+https://github.com/ChaoningZhang/MobileSAM.git
+# weights (~40 MB):
+curl -L -o weights/mobile_sam.pt \
+  https://github.com/ChaoningZhang/MobileSAM/raw/master/weights/mobile_sam.pt
+```
+
+**CLI — automatic "segment everything":**
+
+```bash
+python segment.py photo.jpg -o mask.svg
+python segment.py photo.jpg -o mask.svg --color mean --max-regions 40 --layers
+```
+
+Each region becomes a separately selectable object in Inkscape's Objects panel
+(`id` + `inkscape:label`, plus `data-area-mm2` / `data-iou`), under a single
+`segmentation` layer — or one layer per region with `--layers`.
+
+Key knobs:
+
+- **`--color`** — `label` (distinct palette, default), `mean` (average image
+  colour per region), or `gray` (grayscale ramp).
+- **`--max-regions N`** — keep only the N largest regions.
+- **`--dedup-iou`** (default `0.7`) — SAM emits nested masks (a whole shape *and*
+  a sub-part); this drops any mask that overlaps a larger kept one above the
+  threshold. Set `0` to keep everything.
+- **`--min-area`** — drop regions below this fraction of the image.
+- **`--simplify`** — contour decimation tolerance in mm.
+- **`--points-per-side`** — SAM's sampling grid density (more = more/smaller
+  regions, slower).
+
+> Runs on **CPU** — MobileSAM's automatic generator feeds float64 point tensors
+> that Apple's MPS backend rejects, so MPS isn't auto-picked. Expect tens of
+> seconds for a typical image.
+
+**Interactive — click-to-pick** (`segment_server.py`):
+
+```bash
+python segment_server.py           # -> http://127.0.0.1:5002
+PORT=8080 python segment_server.py
+```
+
+Upload an image, then **left-click objects to include** them and **shift-click to
+exclude** (carve the mask back); **Add region** freezes each mask, and **Download
+SVG** writes them all out. Same output format as the CLI. Unlike the automatic
+generator, the prompted predictor casts prompts to float32, so this UI runs on
+**Apple MPS** when available.
+
 ## Files
 
 - `linify.py` — the CLI (and importable rendering API: `image_to_svg(src, Params)`).
-- `server.py` — the optional local web UI.
+- `server.py` — the optional local web UI for linify.
+- `segment.py` — the segmentation-mask CLI (MobileSAM → filled region SVG).
+- `segment_server.py` — the interactive click-to-pick web UI for segment.
 - `sample.png` — a synthetic test portrait used by the examples above.
 ```
