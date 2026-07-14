@@ -425,11 +425,60 @@ SVG** writes them all out. Same output format as the CLI. Unlike the automatic
 generator, the prompted predictor casts prompts to float32, so this UI runs on
 **Apple MPS** when available.
 
+## epilogue — make any SVG Epilog-safe
+
+A second **sibling tool**. Where linify and segment *generate* SVG, epilogue
+*ingests* one — from Inkscape, Affinity Designer, Illustrator, or linify/segment
+themselves — and rewrites it into the one dialect the Epilog print driver
+reliably imports. It's the pass that runs *after* your art tool, fixing the two
+most common driver failures, both purely geometric:
+
+- **Wrong scale.** Inkscape assumes 96 (older: 90) DPI while the driver reads
+  72, so files land 25–33% too big; Affinity 2 exports at an arbitrary scale.
+  epilogue reads the declared physical size — or a `--width-mm` you force — and
+  re-emits in real millimetres with a matching `viewBox`, so it imports at
+  exactly the intended size regardless of the source tool.
+- **Unrendered transforms.** The driver silently drops any `<path>` inside a
+  `transform` (a group translate/scale, a matrix, a `<use>`). epilogue composes
+  every transform down the tree and *bakes* it into the coordinates, emitting
+  flat, transform-free paths.
+
+The flatten and rescale are one matrix pass (the root CTM maps user units
+straight to mm). Basic shapes, arcs, and quadratics are reduced to line/cubic
+paths; `<use>` is resolved; output uses linify's compact 0.01 mm grid.
+
+```bash
+python epilogue.py drawing.svg -o cut.svg                 # flatten + true scale
+python epilogue.py drawing.svg -o cut.svg --width-mm 200  # force physical width
+python epilogue.py old.svg     -o cut.svg --dpi 90        # old-Inkscape px files
+```
+
+By default every path is normalized to the laser invariant — `fill:none` + a
+single `0.02mm` hairline cut stroke — so nothing is mistaken for a raster
+engrave. `--no-hairline` preserves the source stroke/fill/width (scaled to mm)
+for files that are already styled correctly.
+
+For multi-operation files (cut/score/engrave on different colours), `--report`
+prints a colour audit and `--snap` rounds each op's colour to the nearest clean
+primary so it matches an Epilog **Color Mapping** row *exactly*. This dodges the
+driver's two traps: pure black is reserved for the General tab, and any colour
+that doesn't exactly match a map row is silently treated as black.
+
+```bash
+python epilogue.py multi.svg -o cut.svg --report          # audit the op colours
+python epilogue.py multi.svg -o cut.svg --snap            # clean them to exact primaries
+```
+
+`<text>` (convert to paths first), raster `<image>`, and CSS-class styling in a
+`<style>` block are not handled — they're warned about and skipped (inline
+`style=` and presentation attributes *are* read).
+
 ## Files
 
 - `linify.py` — the CLI (and importable rendering API: `image_to_svg(src, Params)`).
 - `server.py` — the optional local web UI for linify.
 - `segment.py` — the segmentation-mask CLI (MobileSAM → filled region SVG).
 - `segment_server.py` — the interactive click-to-pick web UI for segment.
+- `epilogue.py` — the Epilog-safe SVG preflight CLI (`svg_to_epilog(src, EpiParams)`).
 - `sample.png` — a synthetic test portrait used by the examples above.
 ```
