@@ -327,7 +327,9 @@ _PAGE = r"""<!doctype html>
           box-shadow:0 2px 12px rgba(0,0,0,.28), 0 0 0 3px color-mix(in srgb,var(--acc) 12%,transparent); }
   .zoom.show { display:flex; }
   .zoom button { border:0; background:transparent; color:var(--fg); font:inherit; cursor:pointer;
-          width:24px; height:22px; border-radius:6px; line-height:1; }
+          width:24px; height:22px; border-radius:6px; line-height:1;
+          display:inline-flex; align-items:center; justify-content:center; }
+  .zoom .home svg { width:12px; height:12px; }
   .zoom button:hover { background:color-mix(in srgb,var(--acc) 16%,var(--faint)); color:var(--acc); }
   .zoom .pct { width:52px; text-align:center; color:var(--mut); cursor:pointer; }
   .zoom .pct:hover { color:var(--acc); }
@@ -476,8 +478,11 @@ _PAGE = r"""<!doctype html>
       </div>
     </div>
     <div class="zoom" id="zoom">
+      <button class="home" id="zHome" title="Reset to 100%"><svg viewBox="0 0 16 16" fill="none"
+        stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path
+        d="M2.5 8 L8 3 L13.5 8"/><path d="M4 7.2 V13 H12 V7.2"/></svg></button>
       <button id="zOut" title="Zoom out">&minus;</button>
-      <button class="pct" id="zPct" title="Reset to fit">100%</button>
+      <button class="pct" id="zPct" title="Reset to 100%">100%</button>
       <button id="zIn" title="Zoom in">+</button>
     </div>
     <div class="stat" id="stat"></div>
@@ -612,6 +617,7 @@ const __zoom = (function(){
   function setZoom(v){ z=Math.max(MINZ, Math.min(MAXZ,v)); apply(); }
   $('zIn').onclick=()=>setZoom(z*1.25);
   $('zOut').onclick=()=>setZoom(z/1.25);
+  $('zHome').onclick=()=>setZoom(1);
   pct.onclick=()=>setZoom(1);
   document.querySelector('.stage').addEventListener('wheel', e=>{
     if(!(e.ctrlKey||e.metaKey) || !box.classList.contains('show')) return;
