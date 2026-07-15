@@ -114,7 +114,8 @@ class Params:
     glyph_cols: int = 80             # grid columns; rows derived from cell aspect
     glyph_palette: str = "ascii"     # built-in ramp: ascii | blocks | boxdraw | favorites
     glyph_chars: str = ""            # explicit character set (overrides --glyph-palette)
-    glyph_font: str = ""             # font file override ('' => built-in macOS font stack)
+    glyph_pack: str = "system"       # font pack: system | sans | mono | serif | unifont
+    glyph_font: str = ""             # single font-file override (wins over --glyph-pack)
     glyph_gamma: float = 1.0         # darkness response curve (<1 lifts midtones)
     glyph_size: float = 0.92         # glyph size as a fraction of the cell (0..1)
     glyph_aspect: float = 1.0        # cell height/width ratio (1 = square cells)
@@ -862,12 +863,48 @@ def render_tsp(gray, p: Params, width_mm, height_mm) -> List[np.ndarray]:
 # geometry: each cell places the chosen glyph's outline as hairline polylines,
 # tone encoded by which glyph (how much contour packs into the cell), never by
 # thickness — same laser rule as every other mode.
-_GLYPH_FONT_STACK = [
-    "/System/Library/Fonts/Apple Symbols.ttf",              # broad symbol coverage
-    "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",  # fallback for the rest
-    "/System/Library/Fonts/Menlo.ttc",                     # crisp ascii ramp
-    "/System/Library/Fonts/Supplemental/STIXGeneral.otf",  # math / technical
+# Font packs: named freetype stacks, first face with the glyph wins. The pack's
+# *primary* font styles the common glyphs; a shared fallback tail catches exotic
+# symbol / arrow / alchemical / CJK-description codepoints so obscure imported
+# sets still render instead of dropping. This mirrors glyph-archive's web font
+# stack (a styled primary + Noto Sans Symbols 2 + a CJK face), but freetype needs
+# the files on disk — the OFL faces are bundled in fonts/ (run fetch_fonts.py).
+# Missing paths are skipped, so on non-macOS hosts the bundled fonts still work.
+_FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+
+
+def _font(name: str) -> str:
+    return os.path.join(_FONT_DIR, name)
+
+
+# Shared tail appended to the styled packs. Between them these cover the symbol,
+# arrow, math and astral-alchemical ranges plus the CJK Ideographic Description
+# characters — the exact blocks a curated glyph-archive export tends to pull in.
+_GLYPH_FALLBACKS = [
+    _font("NotoSansSymbols2-Regular.ttf"),                 # symbols / arrows (OFL, bundled)
+    "/System/Library/Fonts/Apple Symbols.ttf",             # astral alchemical + broad symbols
+    "/System/Library/Fonts/Supplemental/STIXTwoMath.otf",  # math / technical / astronomical
+    "/System/Library/Fonts/Hiragino Sans GB.ttc",          # CJK Ideographic Description (U+2FFx)
 ]
+
+_GLYPH_PACKS = {
+    # native macOS look — broad symbol coverage out of the box
+    "system": ["/System/Library/Fonts/Apple Symbols.ttf",
+               "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+               "/System/Library/Fonts/Menlo.ttc", *_GLYPH_FALLBACKS],
+    # plain grotesque
+    "sans":   ["/System/Library/Fonts/Helvetica.ttc", *_GLYPH_FALLBACKS],
+    # coding aesthetic (JetBrains Mono, bundled OFL)
+    "mono":   [_font("JetBrainsMono-Regular.ttf"),
+               "/System/Library/Fonts/Menlo.ttc", *_GLYPH_FALLBACKS],
+    # editorial serif (Spectral, bundled OFL)
+    "serif":  [_font("Spectral-Regular.ttf"), *_GLYPH_FALLBACKS],
+    # GNU Unifont — unique blocky-pixel styling, near-total BMP coverage; the
+    # "everything renders" pack (Apple Symbols/Noto fill the astral plane).
+    "unifont": [_font("unifont.otf"),
+                "/System/Library/Fonts/Apple Symbols.ttf",
+                _font("NotoSansSymbols2-Regular.ttf")],
+}
 
 # Bundled from a glyph-archive export so `--glyph-palette favorites` works with
 # no import. Missing-in-font entries are dropped automatically at analysis time.
@@ -961,10 +998,17 @@ def charset_from_glyph_json(data) -> str:
 
 
 def _glyph_faces(p: Params):
-    """Resolve the font stack to a list of freetype Faces (first hit wins per char)."""
-    import os
+    """Resolve the selected font pack (or --glyph-font override) to freetype Faces.
+
+    First face with a glyph for a codepoint wins, so a pack's primary font styles
+    the common glyphs and the fallback tail catches the exotic ones. Missing paths
+    are skipped (system fonts absent on non-macOS, un-fetched bundles).
+    """
     import freetype
-    paths = [p.glyph_font] if p.glyph_font else _GLYPH_FONT_STACK
+    if p.glyph_font:
+        paths = [p.glyph_font]
+    else:
+        paths = _GLYPH_PACKS.get(p.glyph_pack, _GLYPH_PACKS["system"])
     faces = []
     for path in paths:
         if not path or not os.path.exists(path):
@@ -975,9 +1019,30 @@ def _glyph_faces(p: Params):
             continue
     if not faces:
         raise RuntimeError(
-            "glyph mode: no usable font found; pass --glyph-font a .ttf/.otf path"
+            "glyph mode: no usable font found — run `python fetch_fonts.py` to "
+            "install the bundled packs, or pass --glyph-font a .ttf/.otf path"
         )
     return faces
+
+
+def _glyph_charset(p: Params) -> List[str]:
+    """The cleaned character set glyph mode will draw (explicit chars or palette)."""
+    source = p.glyph_chars if p.glyph_chars.strip() else \
+        _GLYPH_PALETTES.get(p.glyph_palette, _GLYPH_PALETTES["ascii"])
+    return _clean_charset(source)
+
+
+def glyph_coverage(p: Params):
+    """(requested_count, [chars no font in the pack can draw]) for p's charset.
+
+    A char is 'unsupported' when no face in the resolved pack has an outline for
+    it — exactly the glyphs that would silently drop from the render. Cheap: only
+    consults each face's cmap (no outline decode)."""
+    faces = _glyph_faces(p)
+    chars = _glyph_charset(p)
+    missing = [ch for ch in chars
+               if not any(f.get_char_index(ord(ch)) for f in faces)]
+    return len(chars), missing
 
 
 def _analyze_glyph(faces, ch: str, raster_px: int, seg: int):
@@ -1085,9 +1150,7 @@ def render_glyph(gray, p: Params, width_mm, height_mm) -> List[np.ndarray]:
     from skimage.transform import resize
 
     faces = _glyph_faces(p)
-    source = p.glyph_chars if p.glyph_chars.strip() else \
-        _GLYPH_PALETTES.get(p.glyph_palette, _GLYPH_PALETTES["ascii"])
-    chars = _clean_charset(source)
+    chars = _glyph_charset(p)
 
     recs = [r for r in (_analyze_glyph(faces, ch, 64, 8) for ch in chars)
             if r is not None and r["polys"]]
@@ -1340,6 +1403,16 @@ def image_to_svg(source, p: Params):
         "paths": n_paths,
         "points": n_points,
     }
+    if p.mode == "glyph":
+        # Report how many of the requested glyphs the selected pack can actually
+        # draw, so the UI can warn about the rest (silently dropped otherwise).
+        try:
+            requested, missing = glyph_coverage(p)
+            stats["glyph_pack"] = "custom" if p.glyph_font else p.glyph_pack
+            stats["glyphs_requested"] = requested
+            stats["glyphs_missing"] = len(missing)
+        except Exception:                                    # freetype absent, etc.
+            pass
     return svg, stats
 
 
@@ -1492,8 +1565,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="explicit character set, overrides --glyph-palette")
     gl.add_argument("--glyph-json",
                     help="load a glyph-archive export (JSON) as the character set")
+    gl.add_argument("--glyph-pack", choices=list(_GLYPH_PACKS), default=d.glyph_pack,
+                    help="font pack (styles the glyphs); run fetch_fonts.py first")
     gl.add_argument("--glyph-font", default=d.glyph_font,
-                    help="font file (.ttf/.otf); default is a built-in macOS stack")
+                    help="single font file (.ttf/.otf) override; wins over --glyph-pack")
     gl.add_argument("--glyph-gamma", type=float, default=d.glyph_gamma,
                     help="darkness response curve; <1 lifts midtones")
     gl.add_argument("--glyph-size", type=float, default=d.glyph_size,
@@ -1545,6 +1620,12 @@ def main(argv=None) -> int:
             f"{stats['paths']} paths / {stats['points']} pts",
             file=sys.stderr,
         )
+    miss = stats.get("glyphs_missing", 0)
+    if miss:
+        pack = stats.get("glyph_pack", p.glyph_pack)
+        print(f"warning: {miss} of {stats['glyphs_requested']} glyphs have no "
+              f"outline in the '{pack}' font pack and were skipped; try "
+              f"--glyph-pack unifont for the widest coverage", file=sys.stderr)
     return 0
 
 

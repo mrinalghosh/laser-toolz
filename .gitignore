@@ -1,1 +1,4 @@
 .playwright-mcp/
+
+# Fetched by fetch_fonts.py (~5 MB); the three small OFL faces are committed.
+fonts/unifont.otf

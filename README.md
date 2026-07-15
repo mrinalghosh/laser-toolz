@@ -33,6 +33,7 @@ source .venv/bin/activate
 pip install pillow numpy scikit-image   # scikit-image (+ its scipy) needed for contour, flow, tsp, glyph
 pip install freetype-py                  # only for glyph mode (reads glyph outlines from fonts)
 pip install flask                        # only for the optional web UI
+python fetch_fonts.py                    # only for glyph mode — installs the bundled font packs
 ```
 
 ## Quick start
@@ -221,10 +222,13 @@ python linify.py sample.png -o glyph.svg --mode glyph --glyph-palette ascii --gl
 python linify.py sample.png -o glyph.svg --mode glyph \
     --glyph-palette boxdraw --glyph-edge 0.8 --glyph-cols 90
 
-# your own character set from a glyph-archive export
+# your own character set from a glyph-archive export, in the unifont pack
 python linify.py sample.png -o glyph.svg --mode glyph \
-    --glyph-json ~/Downloads/utf-8-collection.json --glyph-cols 80
+    --glyph-json ~/Downloads/utf-8-collection.json --glyph-pack unifont --glyph-cols 80
 ```
+
+> **First run:** `python fetch_fonts.py` downloads the bundled font packs into
+> `fonts/` (the three small OFL faces are committed; this pulls Unifont, ~5 MB).
 
 - **`--glyph-palette`** is a built-in set — `ascii` (` .:-=+*#%@`), `blocks`
   (shades `░▒▓█`), `boxdraw` (directional lines), or `favorites` (a set bundled
@@ -232,14 +236,22 @@ python linify.py sample.png -o glyph.svg --mode glyph \
   Any palette is re-sorted by *measured* coverage, so ordering is font-honest.
 - **`--glyph-chars " .:-=+*#%@"`** or **`--glyph-json FILE`** override the palette
   with an explicit set (JSON accepts a glyph-archive export: `custom` + `favorites`
-  codepoints). Glyphs missing from the font stack are dropped automatically.
+  codepoints). Glyphs no font in the pack can draw are dropped — see `--glyph-pack`.
+- **`--glyph-pack`** picks which fonts draw the glyphs: `system` (macOS native,
+  default) · `sans` (Helvetica) · `mono` (JetBrains Mono) · `serif` (Spectral) ·
+  `unifont` (GNU Unifont — a blocky-pixel look with **near-total Unicode coverage**).
+  The pack's primary font styles the common glyphs; a shared fallback tail (Noto
+  Sans Symbols 2 + Apple Symbols / STIX / Hiragino) catches exotic symbol, arrow,
+  alchemical and CJK-description codepoints — so an imported symbol set renders in
+  full instead of dropping. The CLI **warns** if any glyph has no outline in the
+  chosen pack (the web UI shows a live *"✓ all N"* / *"⚠ N unsupported"* badge);
+  reach for `unifont` when a pack can't cover an exotic import.
 - **`--glyph-edge`** `0` is pure density; `0.5–1` biases edge cells toward
   aligned strokes. **`--glyph-edge-threshold`** gates how strong an edge must be
   before a directional swap is allowed.
 - **`--glyph-cols`** sets detail; **`--glyph-gamma`** lifts midtones;
   **`--glyph-size`** / **`--glyph-aspect`** tune glyph fill and cell shape;
-  **`--glyph-font`** points at a specific `.ttf`/`.otf` (default is a macOS font
-  stack: Apple Symbols → Arial Unicode → Menlo → STIX, first hit per character).
+  **`--glyph-font`** forces a single `.ttf`/`.otf` (overrides `--glyph-pack`).
 
 Shade glyphs (the `blocks` palette) rasterize to *many* tiny contours, so they're
 path-heavy — great tone, larger files; `ascii` / `boxdraw` / `favorites` stay
@@ -312,7 +324,8 @@ python linify.py horse.png -o horse.svg --mode wavy --mask-threshold 0.92
 | `--glyph-palette` | `ascii` | glyph | `ascii` \| `blocks` \| `boxdraw` \| `favorites` |
 | `--glyph-chars` | — | glyph | explicit character set (overrides `--glyph-palette`) |
 | `--glyph-json` | — | glyph | load a glyph-archive export as the character set |
-| `--glyph-font` | macOS stack | glyph | font file (`.ttf`/`.otf`) for the outlines |
+| `--glyph-pack` | `system` | glyph | font pack: `system` \| `sans` \| `mono` \| `serif` \| `unifont` |
+| `--glyph-font` | — | glyph | single font file (`.ttf`/`.otf`); overrides `--glyph-pack` |
 | `--glyph-gamma` | `1.0` | glyph | darkness response curve; `<1` lifts midtones |
 | `--glyph-size` | `0.92` | glyph | glyph size as a fraction of the cell |
 | `--glyph-aspect` | `1.0` | glyph | cell height/width ratio (`1` = square) |

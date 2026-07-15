@@ -44,7 +44,7 @@ _INT_FIELDS = {"samples", "resample", "levels", "cells_wide", "hatch_lines",
                "points", "tsp_improve", "glyph_cols"}
 _STR_FIELDS = {"mode", "color", "units", "spacing_style", "fill_style",
                "smooth_mode", "contour_source", "glyph_palette", "glyph_chars",
-               "glyph_font"}
+               "glyph_pack", "glyph_font"}
 _FLOAT_FIELDS = {f.name for f in fields(Params)} - _BOOL_FIELDS - _INT_FIELDS - _STR_FIELDS
 
 
@@ -241,6 +241,8 @@ _PAGE = r"""<!doctype html>
               letter-spacing:-.01em; }
   label.row:first-child { margin-top:0; }
   .hint { color:var(--mut); font-size:10.5px; margin:2px 0 0; font-family:var(--sans); }
+  .cov { font:10px/1 var(--mono); color:var(--mut); white-space:nowrap; cursor:help; }
+  .cov.bad { color:var(--err); font-weight:600; }
 
   /* (i) info dot — hover to reveal a tooltip (positioned by JS, see #tip) */
   .info { display:inline-flex; align-items:center; justify-content:center; flex:none;
@@ -568,6 +570,15 @@ _PAGE = r"""<!doctype html>
         <input type="file" id="glyph_file" accept=".json,application/json" hidden>
         <a href="https://mrinalghosh.github.io/glyph-archive/" target="_blank" rel="noopener">glyph-archive ↗</a>
       </div>
+      <label class="row"><span class="lbl">Font pack<span class="info" data-tip="Which fonts draw the glyphs. The pack's primary font styles the common characters; a shared fallback tail covers exotic symbol / arrow / alchemical / CJK ranges so imported sets still render. 'unifont' has the widest coverage (blocky pixel look). Run fetch_fonts.py once to install the bundled packs.">i</span></span>
+        <span id="glyph_cov" class="cov" title=""></span></label>
+      <select id="glyph_pack">
+        <option value="system">system — macOS native</option>
+        <option value="sans">sans — Helvetica</option>
+        <option value="mono">mono — JetBrains Mono</option>
+        <option value="serif">serif — Spectral</option>
+        <option value="unifont">unifont — pixel · widest coverage</option>
+      </select>
       <label class="row"><span class="lbl">Density gamma<span class="info" data-tip="Darkness response curve. Below 1 lifts midtones so mid-gray reaches denser glyphs — more contrast.">i</span></span> <input class="num" type="number" id="n_glyph_gamma"></label>
       <input type="range" id="glyph_gamma" min="0.2" max="2" step="0.05" value="1">
       <label class="row"><span class="lbl">Glyph size<span class="info" data-tip="Glyph size as a fraction of its cell. Below 1 leaves whitespace between glyphs; 1 packs them edge to edge.">i</span></span> <input class="num" type="number" id="n_glyph_size"></label>
@@ -723,6 +734,7 @@ function collect(){
     glyph_cols: g("glyph_cols"),
     glyph_palette: $("glyph_palette").value === "imported" ? "favorites" : $("glyph_palette").value,
     glyph_chars: $("glyph_palette").value === "imported" ? glyphImportChars : "",
+    glyph_pack: $("glyph_pack").value,
     glyph_gamma: g("glyph_gamma"), glyph_size: g("glyph_size"), glyph_aspect: g("glyph_aspect"),
     glyph_edge: g("glyph_edge"), glyph_edge_threshold: g("glyph_edge_threshold"),
     glyph_instance: $("glyph_instance").checked,
@@ -746,6 +758,7 @@ async function render(){
     const w = (s.width_disp ?? s.width_mm/MM_PER[unit]).toFixed(2);
     const h = (s.height_disp ?? s.height_mm/MM_PER[unit]).toFixed(2);
     $("stat").textContent = `${s.mode} · ${w}×${h} ${s.units||unit} · ${s.paths} paths · ${s.points} pts`;
+    updateGlyphCov(s);
   }catch(e){ $("err").textContent = String(e); }
 }
 function debounced(){ clearTimeout(timer); timer = setTimeout(render, 140); }
@@ -792,6 +805,23 @@ $("contour_source").addEventListener("change", render);
 $("smooth_mode").addEventListener("change", render);
 $("fill_style").addEventListener("change", ()=>{ syncFiletHatch(); render(); });
 $("glyph_palette").addEventListener("change", render);
+$("glyph_pack").addEventListener("change", render);
+
+// glyph: show how many requested glyphs the selected font pack can actually draw
+function updateGlyphCov(s){
+  const el = $("glyph_cov");
+  if(s.glyphs_requested == null){ el.textContent = ""; el.classList.remove("bad"); el.title = ""; return; }
+  const miss = s.glyphs_missing || 0;
+  if(miss){
+    el.textContent = `⚠ ${miss} of ${s.glyphs_requested} unsupported`;
+    el.title = `${miss} glyph(s) have no outline in this font pack and are skipped. Switch to the unifont pack for the widest coverage.`;
+    el.classList.add("bad");
+  } else {
+    el.textContent = `✓ all ${s.glyphs_requested}`;
+    el.title = "Every requested glyph renders in this pack.";
+    el.classList.remove("bad");
+  }
+}
 
 // glyph: import a glyph-archive JSON export as a custom palette (parsed client-side)
 let glyphImportChars = "";
