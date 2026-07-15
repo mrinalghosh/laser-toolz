@@ -195,24 +195,29 @@ _PAGE = r"""<!doctype html>
   .gutter:hover::after, .gutter.drag::after { background:var(--acc); width:2px; }
   body.col-resize, body.col-resize * { cursor:col-resize !important; user-select:none !important; }
 
-  /* margin:auto centers the paper yet stays scrollable when zoomed past the stage
-     (flex justify/align-center would clip the top-left overflow instead) */
-  .stage { position:relative; flex:1; min-width:0; display:flex;
+  /* .stagewrap is the non-scrolling anchor so the zoom/stat overlays stay pinned
+     while .stage scrolls under them; margin:auto centers the paper yet stays
+     scrollable when zoomed past the stage (flex center would clip the overflow) */
+  .stagewrap { position:relative; flex:1; min-width:0; display:flex; }
+  .stage { flex:1; min-width:0; display:flex;
            background:var(--stage); overflow:auto; padding:32px; }
   .stage > .paper { margin:auto; }
   .paper { background:var(--paper); border-radius:2px; box-shadow:var(--shadow); }
 
-  /* zoom control — floats bottom-center of the stage, matches the .stat pill */
+  /* zoom control — pinned bottom-center over the stage, a faint laser-red highlight
+     so the always-visible pill reads as an active control */
   .zoom { position:absolute; left:50%; bottom:14px; transform:translateX(-50%); z-index:6;
           display:none; align-items:center; gap:1px; padding:3px;
-          border:1px solid var(--line); border-radius:9px; font-family:var(--mono); font-size:11px;
-          background:color-mix(in srgb,var(--panel) 80%,transparent); backdrop-filter:blur(8px); }
+          border:1px solid color-mix(in srgb,var(--acc) 42%,var(--line)); border-radius:9px;
+          font-family:var(--mono); font-size:11px;
+          background:color-mix(in srgb,var(--panel) 80%,transparent); backdrop-filter:blur(8px);
+          box-shadow:0 2px 12px rgba(0,0,0,.28), 0 0 0 3px color-mix(in srgb,var(--acc) 12%,transparent); }
   .zoom.show { display:flex; }
   .zoom button { border:0; background:transparent; color:var(--fg); font:inherit; cursor:pointer;
           width:24px; height:22px; border-radius:6px; line-height:1; }
-  .zoom button:hover { background:var(--faint); }
+  .zoom button:hover { background:color-mix(in srgb,var(--acc) 16%,var(--faint)); color:var(--acc); }
   .zoom .pct { width:52px; text-align:center; color:var(--mut); cursor:pointer; }
-  .zoom .pct:hover { color:var(--fg); }
+  .zoom .pct:hover { color:var(--acc); }
   .paper svg { display:block; max-width:72vw; max-height:82vh; height:auto; width:auto; }
   /* Hairlines are ~0.02mm — invisible on screen. Force a visible width for PREVIEW
      ONLY; the downloaded file keeps the true hairline. (viewBox is always mm, so
@@ -599,8 +604,10 @@ _PAGE = r"""<!doctype html>
   </div>
 
   <div class="gutter" id="gutter"></div>
-  <div class="stage">
-    <div id="paper" class="paper"><div class="empty">Upload an image to begin…</div></div>
+  <div class="stagewrap">
+    <div class="stage">
+      <div id="paper" class="paper"><div class="empty">Upload an image to begin…</div></div>
+    </div>
     <div class="zoom" id="zoom">
       <button id="zOut" title="Zoom out">&minus;</button>
       <button class="pct" id="zPct" title="Reset to fit">100%</button>

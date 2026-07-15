@@ -154,23 +154,28 @@ _PAGE = r"""<!doctype html>
   .gutter:hover::after, .gutter.drag::after { background:var(--acc); width:2px; }
   body.col-resize, body.col-resize * { cursor:col-resize !important; user-select:none !important; }
 
-  /* margin:auto centers the paper yet stays scrollable when zoomed past the stage */
-  .stage { position:relative; flex:1; min-width:0; display:flex;
+  /* .stagewrap is the non-scrolling anchor so the seg toggle + zoom/stat overlays
+     stay pinned while .stage scrolls; margin:auto centers the paper yet stays scrollable */
+  .stagewrap { position:relative; flex:1; min-width:0; display:flex; }
+  .stage { flex:1; min-width:0; display:flex;
            background:var(--stage); overflow:auto; padding:28px; }
   .stage > .paper, .stage > .empty { margin:auto; }
   .paper { line-height:0; background:var(--paper); border-radius:2px; box-shadow:var(--shadow); }
 
-  /* zoom control — floats bottom-center of the stage, matches the .stat pill */
+  /* zoom control — pinned bottom-center over the stage, a faint laser-red highlight
+     so the always-visible pill reads as an active control */
   .zoom { position:absolute; left:50%; bottom:14px; transform:translateX(-50%); z-index:6;
           display:none; align-items:center; gap:1px; padding:3px;
-          border:1px solid var(--line); border-radius:9px; font-family:var(--mono); font-size:11px;
-          background:color-mix(in srgb,var(--panel) 80%,transparent); backdrop-filter:blur(8px); }
+          border:1px solid color-mix(in srgb,var(--acc) 42%,var(--line)); border-radius:9px;
+          font-family:var(--mono); font-size:11px;
+          background:color-mix(in srgb,var(--panel) 80%,transparent); backdrop-filter:blur(8px);
+          box-shadow:0 2px 12px rgba(0,0,0,.28), 0 0 0 3px color-mix(in srgb,var(--acc) 12%,transparent); }
   .zoom.show { display:flex; }
   .zoom button { border:0; background:transparent; color:var(--fg); font:inherit; cursor:pointer;
           width:24px; height:22px; border-radius:6px; line-height:1; }
-  .zoom button:hover { background:var(--faint); }
+  .zoom button:hover { background:color-mix(in srgb,var(--acc) 16%,var(--faint)); color:var(--acc); }
   .zoom .pct { width:52px; text-align:center; color:var(--mut); cursor:pointer; }
-  .zoom .pct:hover { color:var(--fg); }
+  .zoom .pct:hover { color:var(--acc); }
   #out svg { display:block; }
   #out svg * { vector-effect:non-scaling-stroke; }         /* keep hairlines visible at any fit */
   #out.hair svg path { stroke-width:1.15px; }              /* preview-only: fatten cut strokes */
@@ -348,13 +353,15 @@ _PAGE = r"""<!doctype html>
   </div>
 
   <div class="gutter" id="gutter"></div>
-  <div class="stage">
+  <div class="stagewrap">
+    <div class="stage">
+      <div class="paper hide" id="paper"><div id="out"></div></div>
+      <div class="empty" id="empty">Upload an SVG to begin…</div>
+    </div>
     <div class="seg hide" id="seg">
       <button id="segAfter" class="on">epilogued</button>
       <button id="segBefore">original</button>
     </div>
-    <div class="paper hide" id="paper"><div id="out"></div></div>
-    <div class="empty" id="empty">Upload an SVG to begin…</div>
     <div class="zoom" id="zoom">
       <button id="zOut" title="Zoom out">&minus;</button>
       <button class="pct" id="zPct" title="Reset to fit">100%</button>
@@ -430,9 +437,10 @@ function show(svgText, isAfter){
   const el=box.querySelector('svg'); if(!el) return;
   el.style.width=el.style.height='';
   const nat=el.getBoundingClientRect();
-  // getBoundingClientRect includes the paper's CSS zoom — divide it out so the
-  // fit-to-stage math works on the svg's true size regardless of zoom level.
-  const zf=(window.__zoom&&__zoom.factor())||1;
+  // getBoundingClientRect includes the paper's CSS zoom (modern browsers fold
+  // `zoom` into layout) — divide it out so the fit-to-stage math works on the
+  // svg's true size regardless of zoom level, and switching panels keeps the zoom.
+  const zf=(typeof __zoom!=='undefined'&&__zoom.factor())||1;
   const nw=(nat.width||300)/zf, nh=(nat.height||150)/zf;
   const st=$('paper').parentElement;
   const availW=st.clientWidth-72, availH=st.clientHeight-72;
