@@ -42,6 +42,46 @@ from PIL import Image
 from linify import _MM_PER_UNIT, _fmt, _num, _pair, default_output_path, rdp
 
 _DEFAULT_CHECKPOINT = os.path.join(os.path.dirname(__file__), "weights", "mobile_sam.pt")
+_CHECKPOINT_URL = (
+    "https://github.com/ChaoningZhang/MobileSAM/raw/master/weights/mobile_sam.pt"
+)
+
+
+def ensure_checkpoint(path: str = _DEFAULT_CHECKPOINT) -> str:
+    """Return `path`, downloading the ~40MB MobileSAM checkpoint there if absent.
+
+    Idempotent: a no-op when the file already exists. Streams to a sibling
+    `.part` file and atomically renames on success, so an interrupted download
+    never leaves a truncated `.pt` that would later fail to load.
+    """
+    if os.path.exists(path):
+        return path
+    import urllib.request
+
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = path + ".part"
+    print(f"[segment] downloading MobileSAM checkpoint (~40MB) -> {path}", file=sys.stderr)
+    try:
+        with urllib.request.urlopen(_CHECKPOINT_URL) as resp, open(tmp, "wb") as out:
+            total = int(resp.headers.get("Content-Length", 0))
+            got = 0
+            for chunk in iter(lambda: resp.read(1 << 16), b""):
+                out.write(chunk)
+                got += len(chunk)
+                if total:
+                    print(f"\r[segment]   {got >> 20}/{total >> 20} MB "
+                          f"({got * 100 // total}%)", end="", file=sys.stderr)
+        print("", file=sys.stderr)
+        os.replace(tmp, path)
+    except Exception as exc:                                # network / disk failure
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise RuntimeError(
+            f"Failed to download MobileSAM checkpoint from {_CHECKPOINT_URL}: {exc}\n"
+            "Fetch it manually (~40MB):\n"
+            f"  curl -L -o {path} {_CHECKPOINT_URL}"
+        ) from exc
+    return path
 
 
 # --------------------------------------------------------------------------- #
@@ -171,13 +211,7 @@ def generate_masks(rgb: np.ndarray, p: SegParams) -> Tuple[List[dict], str]:
             "  pip install git+https://github.com/ChaoningZhang/MobileSAM.git"
         ) from exc
 
-    if not os.path.exists(p.checkpoint):
-        raise RuntimeError(
-            f"MobileSAM checkpoint not found at {p.checkpoint!r}.\n"
-            "Download it (~40MB):\n"
-            "  curl -L -o weights/mobile_sam.pt "
-            "https://github.com/ChaoningZhang/MobileSAM/raw/master/weights/mobile_sam.pt"
-        )
+    ensure_checkpoint(p.checkpoint)
 
     device = _pick_device(p.device)
     sam = sam_model_registry["vit_t"](checkpoint=p.checkpoint)

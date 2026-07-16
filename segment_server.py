@@ -35,7 +35,7 @@ from toolz_nav import nav_html
 from linify import safe_stem
 from segment import (
     SegParams, load_rgb, mask_to_rings, region_colors, regions_to_svg,
-    _DEFAULT_CHECKPOINT, _pick_device,
+    _DEFAULT_CHECKPOINT, _pick_device, ensure_checkpoint,
 )
 
 app = Flask(__name__)
@@ -71,9 +71,7 @@ def _get_predictor():
             "segment_server needs mobile_sam:\n"
             "  pip install git+https://github.com/ChaoningZhang/MobileSAM.git"
         ) from exc
-    ckpt = os.environ.get("MOBILE_SAM_CHECKPOINT", _DEFAULT_CHECKPOINT)
-    if not os.path.exists(ckpt):
-        raise RuntimeError(f"MobileSAM checkpoint not found at {ckpt!r}")
+    ckpt = ensure_checkpoint(os.environ.get("MOBILE_SAM_CHECKPOINT", _DEFAULT_CHECKPOINT))
     # The prompted predictor casts point prompts to float32, so MPS is fine here
     # (unlike segment.py's automatic generator). Auto-pick mps when available.
     import torch

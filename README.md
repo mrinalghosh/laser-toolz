@@ -394,7 +394,15 @@ and writes one labelled `<path>` per region.
 ```bash
 pip install torch torchvision opencv-python timm flask
 pip install git+https://github.com/ChaoningZhang/MobileSAM.git
-# weights (~40 MB):
+```
+
+The ~40 MB MobileSAM checkpoint (`weights/mobile_sam.pt`, gitignored) is
+**downloaded automatically on first run** — both the CLI and the web UI call
+`segment.ensure_checkpoint`, which streams it into place and is a no-op
+thereafter. To pre-fetch it (or if you're offline behind a proxy), grab it
+manually:
+
+```bash
 curl -L -o weights/mobile_sam.pt \
   https://github.com/ChaoningZhang/MobileSAM/raw/master/weights/mobile_sam.pt
 ```
