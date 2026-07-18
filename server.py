@@ -243,6 +243,9 @@ _PAGE = r"""<!doctype html>
   .hint { color:var(--mut); font-size:10.5px; margin:2px 0 0; font-family:var(--sans); }
   .cov { font:10px/1 var(--mono); color:var(--mut); white-space:nowrap; cursor:help; }
   .cov.bad { color:var(--err); font-weight:600; }
+  /* read-only derived value: reads like a slid-in number field but muted + inert */
+  .ro { width:72px; text-align:right; font:11.5px/1 var(--mono); color:var(--mut);
+        letter-spacing:-.01em; opacity:.85; user-select:none; }
 
   /* (i) info dot — hover to reveal a tooltip (positioned by JS, see #tip) */
   .info { display:inline-flex; align-items:center; justify-content:center; flex:none;
@@ -557,6 +560,7 @@ _PAGE = r"""<!doctype html>
     <div class="grp mode-glyph hide"><h3>Glyph <span class="info" data-tip="ASCII / Unicode line art: a grid of glyphs whose ink density tracks tone. Each glyph is drawn as the font's OWN hairline outline (no tracing) — tone is which glyph is chosen, never stroke thickness.">i</span></h3>
       <label class="row"><span class="lbl">Columns<span class="info" data-tip="Number of glyph cells across. Rows follow from the cell aspect. More columns = finer detail, smaller glyphs.">i</span></span> <input class="num" type="number" id="n_glyph_cols"></label>
       <input type="range" id="glyph_cols" min="16" max="200" step="1" value="80">
+      <label class="row"><span class="lbl">Rows<span class="info" data-tip="How many glyph rows the grid works out to — derived from the image proportions, the column count, and the cell aspect. Read-only: set it via Columns and Cell aspect. Shows once an image is loaded.">i</span></span> <span class="ro" id="glyph_rows_out">—</span></label>
       <label class="row"><span class="lbl">Palette<span class="info" data-tip="Character set, sorted light→dark by each glyph's measured ink coverage. Import a glyph-archive export to use your own set.">i</span></span></label>
       <select id="glyph_palette">
         <option value="ascii">ascii — . : - = + * # % @</option>
@@ -651,7 +655,7 @@ _PAGE = r"""<!doctype html>
 
 <script>
 const $ = id => document.getElementById(id);
-let imgId = null, mode = "wavy", unit = "mm", timer = null;
+let imgId = null, mode = "wavy", unit = "mm", timer = null, imgAspect = 0;
 
 const MM_PER = { mm:1, cm:10, in:25.4 };
 const WIDTH_CFG = { mm:{min:20,max:1000,step:1}, cm:{min:2,max:100,step:0.1}, in:{min:1,max:40,step:0.1} };
@@ -807,6 +811,21 @@ $("fill_style").addEventListener("change", ()=>{ syncFiletHatch(); render(); });
 $("glyph_palette").addEventListener("change", render);
 $("glyph_pack").addEventListener("change", render);
 
+// glyph: derived (non-editable) row count — mirrors linify's render_glyph grid math
+//   rows = round(cols * imageAspect / cellAspect)  (width_mm cancels out)
+function updateGlyphRows(){
+  const out = $("glyph_rows_out"); if(!out) return;
+  if(!imgAspect){ out.textContent = "—"; return; }
+  const cols = Math.max(1, Math.trunc(+$("glyph_cols").value || 0));   // int() in the backend
+  const asp  = Math.max(0.05, +$("glyph_aspect").value || 1);          // max(0.05, glyph_aspect)
+  out.textContent = "≈ " + Math.max(1, Math.round(imgAspect * cols / asp));
+}
+["glyph_cols","glyph_aspect"].forEach(id=>{
+  $(id).addEventListener("input", updateGlyphRows);
+  $("n_"+id).addEventListener("input", updateGlyphRows);
+});
+updateGlyphRows();
+
 // glyph: show how many requested glyphs the selected font pack can actually draw
 function updateGlyphCov(s){
   const el = $("glyph_cov");
@@ -885,6 +904,8 @@ async function upload(f){
       return;
     }
     imgId = j.id;
+    imgAspect = (j.w > 0) ? j.h / j.w : 0;   // matches load_gray's aspect = height/width
+    updateGlyphRows();
     __zoom.reset();
     drop.innerHTML = `${f.name} · ${j.w}×${j.h}px<br><small>downloads as ${j.name}_${mode}.svg · click to replace</small>`;
     render();
