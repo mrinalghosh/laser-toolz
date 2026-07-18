@@ -847,13 +847,25 @@ $("glyph_pack").addEventListener("change", render);
 $("glyph_density").addEventListener("change", render);
 
 // glyph: export a sorted density-ramp palette sheet (no image needed) — same sort
-// as the render, so it's a faithful legend for a portrait made with these params
-$("glyph_palette_btn").addEventListener("click", ()=>{
+// as the render, so it's a faithful legend for a portrait made with these params.
+// Fetched as a blob (not window.location) so an error surfaces inline instead of
+// navigating the whole app away to the error text.
+$("glyph_palette_btn").addEventListener("click", async ()=>{
   const q = new URLSearchParams();
   Object.entries(collect()).forEach(([k,v])=>{
     if(v!==undefined && v!==null) q.set(k, typeof v==="boolean" ? (v?"1":"0") : v);
   });
-  window.location = "/glyph_palette?"+q.toString();
+  try{
+    const r = await fetch("/glyph_palette?"+q.toString());
+    if(!r.ok){ $("err").textContent = "palette export failed: " + (await r.text()); return; }
+    const cd = r.headers.get("Content-Disposition") || "";
+    const name = (cd.match(/filename="([^"]+)"/) || [,"palette.svg"])[1];
+    const url = URL.createObjectURL(await r.blob());
+    const a = document.createElement("a");
+    a.href = url; a.download = name; document.body.appendChild(a); a.click();
+    a.remove(); URL.revokeObjectURL(url);
+    $("err").textContent = "";
+  }catch(e){ $("err").textContent = "palette export failed: " + e; }
 });
 
 // glyph: derived (non-editable) row count — mirrors linify's render_glyph grid math
