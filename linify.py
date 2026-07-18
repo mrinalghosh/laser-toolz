@@ -122,6 +122,10 @@ class Params:
     glyph_edge: float = 0.0          # edge-direction awareness 0..1 (0 = pure density)
     glyph_edge_threshold: float = 0.12  # min local edge coherence to allow a directional swap
     glyph_instance: bool = False     # emit each glyph once in <defs>, place with <use> (smaller file)
+    glyph_density: str = "coverage"  # tonal-rank metric: coverage (ink area) | outline (stroke length)
+    # palette-sheet export (glyph_palette_svg) — independent of any input image
+    glyph_palette_cols: int = 16     # cells per row on the exported density-ramp sheet
+    glyph_palette_cell: float = 8.0  # mm per glyph cell on the exported sheet
 
 
 # --------------------------------------------------------------------------- #
@@ -1045,21 +1049,21 @@ def glyph_coverage(p: Params):
     return len(chars), missing
 
 
-def _analyze_glyph(faces, ch: str, raster_px: int, seg: int):
-    """Return a glyph record, or None if no font in the stack has this character.
+def _glyph_face(faces, ch: str):
+    """First face in the stack with an outline for ``ch`` (else None)."""
+    return next((f for f in faces if f.get_char_index(ord(ch)) != 0), None)
 
-    ``polys`` are the font's native outline contours flattened to polylines in
-    normalized em space (y up, baseline at 0). ``cov`` is ink fraction of the em
-    box (the tonal rank); ``ang``/``coh`` are the dominant stroke orientation and
-    its coherence, used for edge-aware substitution.
+
+def _glyph_outline(face, ch: str, seg: int):
+    """The font's native outline for ``ch`` on ``face``, flattened to polylines in
+    normalized em space (y up, baseline at 0), plus the advance width in em.
+
+    Shared by ``_analyze_glyph`` (tone ranking + the rendered grid) and the palette
+    sheet's etched labels, so a glyph is drawn from the font's own vectors — no
+    tracing — everywhere it appears.
     """
     import freetype
-    face = next((f for f in faces if f.get_char_index(ord(ch)) != 0), None)
-    if face is None:
-        return None
     upem = float(face.units_per_EM or 2048)
-
-    # --- native outline (font's own vectors) -> normalized polylines ---
     face.load_char(ch, freetype.FT_LOAD_NO_SCALE | freetype.FT_LOAD_NO_BITMAP)
     adv = face.glyph.advance.x / upem
     polys: list = []
@@ -1096,8 +1100,30 @@ def _analyze_glyph(faces, ch: str, raster_px: int, seg: int):
     except Exception:                                       # degenerate/empty outline
         pass
     polys = [np.asarray(pl, dtype=float) for pl in polys if len(pl) >= 2]
+    return polys, adv
+
+
+def _analyze_glyph(faces, ch: str, raster_px: int, seg: int):
+    """Return a glyph record, or None if no font in the stack has this character.
+
+    ``polys`` are the font's native outline contours (normalized em space, y up).
+    ``cov`` is ink fraction of the em box and ``length`` the total outline stroke
+    length in em units — the two tonal-rank metrics (``glyph_density``): coverage
+    reads the filled area, outline the perforated line length (what a hairline
+    laser cut actually darkens with). ``ang``/``coh`` are the dominant stroke
+    orientation and coherence, used for edge-aware substitution.
+    """
+    face = _glyph_face(faces, ch)
+    if face is None:
+        return None
+
+    # --- native outline (font's own vectors) -> normalized polylines ---
+    polys, adv = _glyph_outline(face, ch, seg)
+    length = float(sum(np.linalg.norm(np.diff(pl, axis=0), axis=1).sum()
+                       for pl in polys))                    # total stroke length (em)
 
     # --- rasterize the same glyph for tone rank + stroke orientation ---
+    import freetype
     face.set_pixel_sizes(0, raster_px)
     face.load_char(ch, freetype.FT_LOAD_RENDER)
     bm = face.glyph.bitmap
@@ -1112,7 +1138,41 @@ def _analyze_glyph(faces, ch: str, raster_px: int, seg: int):
         denom = sxx + syy
         coh = float(np.hypot(sxx - syy, 2.0 * sxy) / denom) if denom > 1e-9 else 0.0
 
-    return {"ch": ch, "polys": polys, "adv": adv, "cov": cov, "ang": ang, "coh": coh}
+    return {"ch": ch, "polys": polys, "adv": adv, "cov": cov, "ang": ang,
+            "coh": coh, "length": length}
+
+
+def _glyph_density_key(metric: str):
+    """The record field ranking glyphs light->dark for the chosen ``glyph_density``:
+    ``outline`` = total stroke length (a hairline laser's perceived tone), else the
+    rasterized ink ``cov``. One place so render + palette-sheet stay in lockstep."""
+    field = "length" if metric == "outline" else "cov"
+    return lambda r: r[field]
+
+
+def _label_polylines(faces, text: str, height_mm: float, seg: int = 6):
+    """Lay ``text`` out as hairline mm polylines from the font's own digit/letter
+    outlines (same no-tracing rule as the glyphs), normalized so the drawn bounding
+    box sits at the origin (y down). One em scales to ``height_mm``. Returns
+    ``(polylines, width_mm, height_mm)`` — ``([], 0, 0)`` if nothing drew. Used for
+    the palette sheet's etched rank labels."""
+    x_em, raw = 0.0, []
+    for ch in text:
+        face = _glyph_face(faces, ch)
+        if face is None:
+            x_em += 0.5                                    # blank slot for a missing glyph
+            continue
+        polys, adv = _glyph_outline(face, ch, seg)
+        for pl in polys:
+            raw.append(pl + (x_em, 0.0))                   # shift right in em space
+        x_em += adv if adv > 0 else 0.5
+    if not raw:
+        return [], 0.0, 0.0
+    scaled = [np.column_stack([pl[:, 0] * height_mm, -pl[:, 1] * height_mm])
+              for pl in raw]                               # em -> mm, flip y down
+    mn = np.vstack(scaled).min(axis=0)
+    w, h = np.vstack(scaled).max(axis=0) - mn
+    return [s - mn for s in scaled], float(w), float(h)    # top-left -> origin
 
 
 class GlyphInstances:
@@ -1157,16 +1217,18 @@ def render_glyph(gray, p: Params, width_mm, height_mm) -> List[np.ndarray]:
     if not recs:
         return []
 
-    # Ramp sorted light->dark; index 0 is a synthetic BLANK so highlights stay empty.
-    recs.sort(key=lambda r: r["cov"])
-    cov = np.array([0.0] + [r["cov"] for r in recs])
-    cov_n = cov / (cov.max() or 1.0)                        # normalized 0..1
+    # Ramp sorted light->dark by the chosen density metric (coverage | outline);
+    # index 0 is a synthetic BLANK so highlights stay empty.
+    dkey = _glyph_density_key(p.glyph_density)
+    recs.sort(key=dkey)
+    dens = np.array([0.0] + [dkey(r) for r in recs])
+    dens_n = dens / (dens.max() or 1.0)                    # normalized 0..1
     ang = np.array([0.0] + [r["ang"] for r in recs])
     coh = np.array([0.0] + [r["coh"] for r in recs])
     dir_mask = coh >= _GLYPH_DIR_COHERENCE
     polys_by_glyph = [None] + [r["polys"] for r in recs]
     adv_by_glyph = np.array([0.0] + [r["adv"] for r in recs])
-    G = len(cov_n)
+    G = len(dens_n)
 
     # Cell grid: columns fixed, rows derived so cells honor --glyph-aspect.
     cols = max(1, int(p.glyph_cols))
@@ -1194,7 +1256,7 @@ def render_glyph(gray, p: Params, width_mm, height_mm) -> List[np.ndarray]:
         coh_img = np.where(denom > 1e-12, np.hypot(sxx - syy, 2.0 * sxy) /
                            np.maximum(denom, 1e-12), 0.0)
 
-        tone = np.abs(cov_n[None, :] - target.ravel()[:, None])    # (M,G)
+        tone = np.abs(dens_n[None, :] - target.ravel()[:, None])    # (M,G)
         dth = ang[None, :] - theta_img.ravel()[:, None]
         adist = np.abs(((dth + np.pi / 2) % np.pi) - np.pi / 2) / (np.pi / 2)  # 0..1
         dirpen = np.where(dir_mask[None, :], adist, 1.0)   # non-directional glyphs disfavored
@@ -1202,10 +1264,10 @@ def render_glyph(gray, p: Params, width_mm, height_mm) -> List[np.ndarray]:
         choice = np.argmin((1.0 - lam_cell) * tone + lam_cell * dirpen,
                            axis=1).reshape(rows, cols)
     else:
-        # Pure density: nearest coverage on the sorted ramp (no big score matrix).
+        # Pure density: nearest step on the sorted ramp (no big score matrix).
         tgt = target.ravel()
-        idx = np.clip(np.searchsorted(cov_n, tgt), 1, G - 1)
-        pick_low = (tgt - cov_n[idx - 1]) <= (cov_n[idx] - tgt)
+        idx = np.clip(np.searchsorted(dens_n, tgt), 1, G - 1)
+        pick_low = (tgt - dens_n[idx - 1]) <= (dens_n[idx] - tgt)
         choice = np.where(pick_low, idx - 1, idx).reshape(rows, cols)
 
     mask = (bright > p.mask_threshold) if p.mask_threshold is not None else None
@@ -1366,6 +1428,74 @@ def glyph_instances_to_svg(inst: "GlyphInstances", width_mm, height_mm, p: Param
                          extra_svg_attr=' xmlns:xlink="http://www.w3.org/1999/xlink"')
 
 
+def glyph_palette_svg(p: Params):
+    """Render the selected glyph charset as a sorted density-ramp reference sheet.
+
+    A laser-cuttable swatch: each cell draws a glyph's native hairline outline over
+    an etched rank index (1 = lightest), laid out light->dark by ``p.glyph_density``
+    — ``coverage`` (rasterized ink area) or ``outline`` (total stroke length ~=
+    microperforation count, the tone you actually perceive once the hairlines are
+    cut). Uses the SAME sort as ``render_glyph``, so the sheet is a faithful legend
+    for a portrait rendered with the same params. Works for a built-in palette, an
+    explicit ``glyph_chars`` set, or a pre-processed imported glyph-archive JSON —
+    whatever ``_glyph_charset`` resolves. Takes no input image; returns (svg, stats).
+    """
+    try:
+        import freetype  # noqa: F401
+    except ImportError as exc:                              # pragma: no cover
+        raise RuntimeError("glyph mode needs freetype-py; pip install freetype-py") from exc
+
+    faces = _glyph_faces(p)
+    chars = _glyph_charset(p)
+    recs = [r for r in (_analyze_glyph(faces, ch, 64, 8) for ch in chars)
+            if r is not None and r["polys"]]
+    metric = "outline" if p.glyph_density == "outline" else "coverage"
+    recs.sort(key=_glyph_density_key(metric))              # light -> dark, same as render
+
+    cell = max(1.0, float(p.glyph_palette_cell))           # mm per glyph cell
+    n = len(recs)
+    cols = max(1, min(int(p.glyph_palette_cols), n or 1))
+    rows = max(1, (n + cols - 1) // cols)
+    gap = 0.10 * cell                                      # glyph square -> label band
+    label_h = 0.20 * cell                                  # etched index cap height (mm)
+    cell_h = cell + gap + label_h
+    width_mm, height_mm = cols * cell, rows * cell_h
+
+    s_em = max(0.05, min(p.glyph_size, 1.0)) * cell        # glyph 1em -> mm
+    y_center = 0.35                                        # em fraction ~ visual middle
+    out = []
+    for i, r in enumerate(recs):
+        cr, cc = divmod(i, cols)
+        cx, cy = cc * cell + cell / 2.0, cr * cell_h + cell / 2.0
+        x_center = r["adv"] / 2.0 if r["adv"] > 0 else 0.25
+        for pl in r["polys"]:                              # the glyph, centered in its square
+            seg = np.column_stack([(pl[:, 0] - x_center) * s_em,
+                                   -(pl[:, 1] - y_center) * s_em])
+            seg = rdp(seg, p.decimate)                     # RDP is translation-invariant
+            if len(seg) >= 2:
+                out.append(seg + (cx, cy))
+        lab, lw, _ = _label_polylines(faces, str(i + 1), label_h)   # etched rank
+        lx, ly = cc * cell + (cell - lw) / 2.0, cr * cell_h + cell + gap
+        for seg in lab:
+            out.append(seg + (lx, ly))
+
+    svg = polylines_to_svg(out, width_mm, height_mm, p)
+    _, missing = glyph_coverage(p)
+    per = _MM_PER_UNIT.get(p.units, 1.0)
+    stats = {
+        "mode": "glyph-palette", "density": metric,
+        "glyph_pack": "custom" if p.glyph_font else p.glyph_pack,
+        "cols": cols, "rows": rows, "glyphs": n,
+        "glyphs_requested": len(chars), "glyphs_missing": len(missing),
+        "width_mm": round(width_mm, 3), "height_mm": round(height_mm, 3),
+        "units": p.units,
+        "width_disp": round(width_mm / per, 4), "height_disp": round(height_mm / per, 4),
+        "paths": sum(1 for pl in out if len(pl) >= 2),
+        "points": int(sum(len(pl) for pl in out)),
+    }
+    return svg, stats
+
+
 # --------------------------------------------------------------------------- #
 # Top-level API (shared by CLI and webserver)
 # --------------------------------------------------------------------------- #
@@ -1446,7 +1576,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="Convert a raster image into laser-ready hairline SVG line art.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    ap.add_argument("input", help="input raster image (PNG/JPG/...)")
+    ap.add_argument("input", nargs="?",
+                    help="input raster image (PNG/JPG/...); optional only when "
+                         "--glyph-palette-export is given")
     ap.add_argument("-o", "--output",
                     help="output SVG path (default: <input>_<mode>.svg next to "
                          "the input; pass '-' for stdout)")
@@ -1582,6 +1714,20 @@ def build_parser() -> argparse.ArgumentParser:
     gl.add_argument("--glyph-instance", action="store_true", default=d.glyph_instance,
                     help="define each glyph once in <defs>, place with <use> "
                          "(smaller file; verify your SVG importer handles <use>)")
+    gl.add_argument("--glyph-density", choices=["coverage", "outline"],
+                    default=d.glyph_density,
+                    help="tonal-rank metric: 'coverage' (rasterized ink area) or "
+                         "'outline' (total stroke length ~ microperforation count, "
+                         "the tone a hairline laser cut actually reads)")
+    gl.add_argument("--glyph-palette-export", metavar="PATH",
+                    help="write a sorted density-ramp reference sheet of the glyph "
+                         "charset (glyphs + etched rank labels) to PATH and exit; "
+                         "needs no input image, '-' for stdout. Honors --glyph-"
+                         "palette/-chars/-json/-pack/-font/-density")
+    gl.add_argument("--glyph-palette-cols", type=int, default=d.glyph_palette_cols,
+                    help="cells per row on the exported palette sheet")
+    gl.add_argument("--glyph-palette-cell", type=float, default=d.glyph_palette_cell,
+                    help="mm per glyph cell on the exported palette sheet")
     return ap
 
 
@@ -1594,7 +1740,8 @@ def params_from_args(ns) -> Params:
 
 
 def main(argv=None) -> int:
-    ns = build_parser().parse_args(argv)
+    parser = build_parser()
+    ns = parser.parse_args(argv)
     if getattr(ns, "glyph_json", None):                     # feed a glyph-archive export in
         try:
             ns.glyph_chars = charset_from_glyph_json(ns.glyph_json)
@@ -1602,6 +1749,31 @@ def main(argv=None) -> int:
             print(f"error: couldn't read --glyph-json: {exc}", file=sys.stderr)
             return 1
     p = params_from_args(ns)
+
+    # Palette-sheet export: a density-ordered legend for the charset, no input image.
+    if ns.glyph_palette_export:
+        try:
+            svg, stats = glyph_palette_svg(p)
+        except RuntimeError as exc:                          # freetype/fonts absent
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        out = ns.glyph_palette_export
+        if out == "-":
+            sys.stdout.write(svg)
+        else:
+            with open(out, "w") as fh:
+                fh.write(svg)
+            print(f"wrote {out}  [glyph-palette · {stats['density']}]  "
+                  f"{stats['glyphs']} glyphs  {stats['cols']}x{stats['rows']} cells  "
+                  f"{stats['width_mm']}x{stats['height_mm']}mm", file=sys.stderr)
+        if stats.get("glyphs_missing"):
+            print(f"warning: {stats['glyphs_missing']} of {stats['glyphs_requested']} "
+                  f"glyphs have no outline in the '{stats['glyph_pack']}' font pack "
+                  f"and were skipped; try --glyph-pack unifont", file=sys.stderr)
+        return 0
+
+    if not ns.input:
+        parser.error("input image is required (or use --glyph-palette-export)")
     try:
         svg, stats = image_to_svg(ns.input, p)
     except FileNotFoundError:

@@ -233,7 +233,8 @@ python linify.py sample.png -o glyph.svg --mode glyph \
 - **`--glyph-palette`** is a built-in set — `ascii` (` .:-=+*#%@`), `blocks`
   (shades `░▒▓█`), `boxdraw` (directional lines), or `favorites` (a set bundled
   from a [glyph-archive](https://mrinalghosh.github.io/glyph-archive/) export).
-  Any palette is re-sorted by *measured* coverage, so ordering is font-honest.
+  Any palette is re-sorted by a *measured* density metric, so ordering is
+  font-honest (see `--glyph-density`).
 - **`--glyph-chars " .:-=+*#%@"`** or **`--glyph-json FILE`** override the palette
   with an explicit set (JSON accepts a glyph-archive export: `custom` + `favorites`
   codepoints). Glyphs no font in the pack can draw are dropped — see `--glyph-pack`.
@@ -256,6 +257,38 @@ python linify.py sample.png -o glyph.svg --mode glyph \
 Shade glyphs (the `blocks` palette) rasterize to *many* tiny contours, so they're
 path-heavy — great tone, larger files; `ascii` / `boxdraw` / `favorites` stay
 lean.
+
+**Density metric — matching what the laser actually cuts.** By default glyphs are
+ranked light→dark by **`coverage`** (rasterized ink area). But the laser cuts each
+glyph as a *hairline outline*, and with microperforations the tone you perceive
+tracks total **stroke length** (≈ number of perforations), not filled area — so a
+solid `█` scores "darkest" by area yet cuts as an almost-empty rectangle, the
+*lightest* thing on the sheet. Pass **`--glyph-density outline`** to rank by outline
+length instead, which is what a hairline cut reads. It re-orders both the palette
+and the tone→glyph mapping of a portrait. (`coverage` still suits solid-filled
+output; `outline` is the laser-honest one.)
+
+**Export a palette sheet to verify the order.** **`--glyph-palette-export
+PATH`** writes a laser-cuttable reference swatch of the selected character set —
+each glyph's hairline outline over an etched rank index, laid out light→dark in the
+chosen `--glyph-density` order, `--glyph-palette-cols` per row at
+`--glyph-palette-cell` mm each. It needs *no input image* and honors
+`--glyph-palette` / `--glyph-chars` / `--glyph-json` / `--glyph-pack` /
+`--glyph-font`, so it works for an imported set too. Cut it once and you can read
+the true perceived-density order off the material, then curate the set.
+
+```bash
+# density-ordered swatch of the blocks palette, laser-honest ordering
+python linify.py --mode glyph --glyph-palette blocks \
+    --glyph-density outline --glyph-palette-export blocks_palette.svg
+
+# a sheet for your imported set, 12 glyphs per row
+python linify.py --mode glyph --glyph-json ~/Downloads/set.json \
+    --glyph-pack unifont --glyph-palette-cols 12 --glyph-palette-export set_palette.svg
+```
+
+In the web UI the **glyph** panel has a **Density order** dropdown (live) and an
+**Export palette ↓** button (with a *cols* field) that downloads the same sheet.
 
 **`--glyph-instance`** shrinks path-heavy grids further: instead of repeating a
 glyph's outline in every cell, it defines each distinct glyph once in `<defs>`
@@ -332,6 +365,10 @@ python linify.py horse.png -o horse.svg --mode wavy --mask-threshold 0.92
 | `--glyph-edge` | `0` | glyph | edge-direction awareness `0..1` (`0` = pure density) |
 | `--glyph-edge-threshold` | `0.12` | glyph | min edge coherence to allow a directional swap |
 | `--glyph-instance` | off | glyph | define each glyph once in `<defs>`, place with `<use>` (smaller file; verify importer) |
+| `--glyph-density` | `coverage` | glyph | tonal-rank metric: `coverage` (ink area) \| `outline` (stroke length ≈ perforation count) |
+| `--glyph-palette-export` | — | glyph | write a sorted density-ramp reference sheet (glyphs + etched ranks) to PATH and exit; needs no input image |
+| `--glyph-palette-cols` | `16` | glyph | cells per row on the exported palette sheet |
+| `--glyph-palette-cell` | `8.0` | glyph | mm per glyph cell on the exported palette sheet |
 
 ## Verifying the output
 

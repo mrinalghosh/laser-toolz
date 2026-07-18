@@ -22,7 +22,7 @@ from dataclasses import fields
 from flask import Flask, jsonify, request, Response
 from PIL import Image, UnidentifiedImageError
 
-from linify import Params, image_to_svg, safe_stem
+from linify import Params, image_to_svg, glyph_palette_svg, safe_stem
 from toolz_nav import nav_html
 
 app = Flask(__name__)
@@ -41,10 +41,10 @@ _NAMES: dict[str, str] = {}
 # None) and PEP 563 makes dataclass .type a string, so name the coercion here.
 _BOOL_FIELDS = {"invert", "freq_mod", "mesh", "islands_only", "glyph_instance"}
 _INT_FIELDS = {"samples", "resample", "levels", "cells_wide", "hatch_lines",
-               "points", "tsp_improve", "glyph_cols"}
+               "points", "tsp_improve", "glyph_cols", "glyph_palette_cols"}
 _STR_FIELDS = {"mode", "color", "units", "spacing_style", "fill_style",
                "smooth_mode", "contour_source", "glyph_palette", "glyph_chars",
-               "glyph_pack", "glyph_font"}
+               "glyph_pack", "glyph_font", "glyph_density"}
 _FLOAT_FIELDS = {f.name for f in fields(Params)} - _BOOL_FIELDS - _INT_FIELDS - _STR_FIELDS
 
 
@@ -128,6 +128,29 @@ def download():
         svg,
         mimetype="image/svg+xml",
         headers={"Content-Disposition": f'attachment; filename="{stem}_{p.mode}.svg"'},
+    )
+
+
+@app.get("/glyph_palette")
+def glyph_palette():
+    """Download a sorted density-ramp reference sheet of the current glyph charset.
+
+    Needs no uploaded image — the sheet is derived purely from the glyph params
+    (palette / imported chars / pack / density). Named `<palette>_palette.svg`.
+    """
+    data = {k: (v[0] if isinstance(v, list) else v) for k, v in request.args.items()}
+    p = _params_from_json(data)
+    try:
+        svg, _ = glyph_palette_svg(p)
+    except Exception as exc:  # freetype/fonts absent, etc.
+        return str(exc), 400
+    # name after the imported set or the built-in palette, mirroring the CLI tag
+    src = "imported" if data.get("glyph_chars") else (data.get("glyph_palette") or "glyph")
+    stem = safe_stem(src, "glyph")
+    return Response(
+        svg,
+        mimetype="image/svg+xml",
+        headers={"Content-Disposition": f'attachment; filename="{stem}_palette.svg"'},
     )
 
 
@@ -561,7 +584,7 @@ _PAGE = r"""<!doctype html>
       <label class="row"><span class="lbl">Columns<span class="info" data-tip="Number of glyph cells across. Rows follow from the cell aspect. More columns = finer detail, smaller glyphs.">i</span></span> <input class="num" type="number" id="n_glyph_cols"></label>
       <input type="range" id="glyph_cols" min="16" max="200" step="1" value="80">
       <label class="row"><span class="lbl">Rows<span class="info" data-tip="How many glyph rows the grid works out to — derived from the image proportions, the column count, and the cell aspect. Read-only: set it via Columns and Cell aspect. Shows once an image is loaded.">i</span></span> <span class="ro" id="glyph_rows_out">—</span></label>
-      <label class="row"><span class="lbl">Palette<span class="info" data-tip="Character set, sorted light→dark by each glyph's measured ink coverage. Import a glyph-archive export to use your own set.">i</span></span></label>
+      <label class="row"><span class="lbl">Palette<span class="info" data-tip="Character set, sorted light→dark by the Density order below. Import a glyph-archive export to use your own set.">i</span></span></label>
       <select id="glyph_palette">
         <option value="ascii">ascii — . : - = + * # % @</option>
         <option value="blocks">blocks — shades ░ ▒ ▓ █</option>
@@ -573,6 +596,16 @@ _PAGE = r"""<!doctype html>
         <button type="button" id="glyph_import_btn" class="mini">Import JSON</button>
         <input type="file" id="glyph_file" accept=".json,application/json" hidden>
         <a href="https://mrinalghosh.github.io/glyph-archive/" target="_blank" rel="noopener">glyph-archive ↗</a>
+      </div>
+      <label class="row"><span class="lbl">Density order<span class="info" data-tip="How the ramp is sorted light→dark, and how a portrait maps tone to glyphs. 'coverage' ranks by rasterized ink area; 'outline' ranks by total stroke length ≈ microperforation count — the tone a hairline laser cut actually reads (a solid █ cuts as an almost-empty box, so it sorts light). Affects both the live render and the exported palette.">i</span></span></label>
+      <select id="glyph_density">
+        <option value="coverage">coverage — ink area</option>
+        <option value="outline">outline — stroke length (laser tone)</option>
+      </select>
+      <div class="glyph-import" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:8px 0 2px">
+        <button type="button" id="glyph_palette_btn" class="mini">Export palette ↓<span class="info" data-tip="Download a sorted density-ramp sheet of this character set — each glyph's hairline outline over an etched rank index, laid out light→dark in the Density order above. A laser-cuttable swatch (hairline / fill:none) for physically checking the ordering. Needs no image.">i</span></button>
+        <label style="display:flex;align-items:center;gap:5px;color:var(--mut)">cols
+          <input class="num" type="number" id="glyph_palette_cols" value="16" min="1" max="64" step="1" style="width:54px"></label>
       </div>
       <label class="row"><span class="lbl">Font pack<span class="info" data-tip="Which fonts draw the glyphs. The pack's primary font styles the common characters; a shared fallback tail covers exotic symbol / arrow / alchemical / CJK ranges so imported sets still render. 'unifont' has the widest coverage (blocky pixel look). Run fetch_fonts.py once to install the bundled packs.">i</span></span>
         <span id="glyph_cov" class="cov" title=""></span></label>
@@ -738,7 +771,8 @@ function collect(){
     glyph_cols: g("glyph_cols"),
     glyph_palette: $("glyph_palette").value === "imported" ? "favorites" : $("glyph_palette").value,
     glyph_chars: $("glyph_palette").value === "imported" ? glyphImportChars : "",
-    glyph_pack: $("glyph_pack").value,
+    glyph_pack: $("glyph_pack").value, glyph_density: $("glyph_density").value,
+    glyph_palette_cols: g("glyph_palette_cols"),
     glyph_gamma: g("glyph_gamma"), glyph_size: g("glyph_size"), glyph_aspect: g("glyph_aspect"),
     glyph_edge: g("glyph_edge"), glyph_edge_threshold: g("glyph_edge_threshold"),
     glyph_instance: $("glyph_instance").checked,
@@ -810,6 +844,17 @@ $("smooth_mode").addEventListener("change", render);
 $("fill_style").addEventListener("change", ()=>{ syncFiletHatch(); render(); });
 $("glyph_palette").addEventListener("change", render);
 $("glyph_pack").addEventListener("change", render);
+$("glyph_density").addEventListener("change", render);
+
+// glyph: export a sorted density-ramp palette sheet (no image needed) — same sort
+// as the render, so it's a faithful legend for a portrait made with these params
+$("glyph_palette_btn").addEventListener("click", ()=>{
+  const q = new URLSearchParams();
+  Object.entries(collect()).forEach(([k,v])=>{
+    if(v!==undefined && v!==null) q.set(k, typeof v==="boolean" ? (v?"1":"0") : v);
+  });
+  window.location = "/glyph_palette?"+q.toString();
+});
 
 // glyph: derived (non-editable) row count — mirrors linify's render_glyph grid math
 //   rows = round(cols * imageAspect / cellAspect)  (width_mm cancels out)
