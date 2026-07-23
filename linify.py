@@ -1476,8 +1476,10 @@ def glyph_palette_svg(p: Params):
                 out.append(seg + (cx, cy))
         lab, lw, _ = _label_polylines(faces, str(i + 1), label_h)   # etched rank
         lx, ly = cc * cell + (cell - lw) / 2.0, cr * cell_h + cell + gap
-        for seg in lab:
-            out.append(seg + (lx, ly))
+        for seg in lab:                                    # thin like the glyphs: labels
+            seg = rdp(seg, p.decimate)                     # are ~1mm tall, so their raw
+            if len(seg) >= 2:                              # bezier points crawl the laser
+                out.append(seg + (lx, ly))
 
     svg = polylines_to_svg(out, width_mm, height_mm, p)
     _, missing = glyph_coverage(p)
